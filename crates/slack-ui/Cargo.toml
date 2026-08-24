@@ -16,9 +16,12 @@ gpui-component.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+lru = "0.12"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+futures.workspace = true
+gpui-component.workspace = true
 
 [lints]
 workspace = true

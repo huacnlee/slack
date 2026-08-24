@@ -138,6 +138,8 @@ pub struct ChannelView {
     uploading: Option<SharedString>,
     /// Local copies of the image attachments on screen.
     thumbnails: Thumbnails,
+    /// Bounds what the decoded avatars and thumbnails on screen cost.
+    images: Entity<crate::images::LruImageCache>,
     scroll: ScrollHandle,
     focus: FocusHandle,
     /// Bumped on every conversation switch; replies carrying an older
@@ -171,6 +173,7 @@ impl ChannelView {
             editing: None,
             uploading: None,
             thumbnails: Thumbnails::default(),
+            images: crate::images::LruImageCache::new(crate::images::DEFAULT_CAPACITY, cx),
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
             revision: 0,
@@ -187,6 +190,18 @@ impl ChannelView {
 
     pub fn channel(&self) -> Option<&SharedString> {
         self.channel.as_ref()
+    }
+
+    /// The message bodies currently on screen, oldest first.
+    ///
+    /// Reading the rendered transcript is how a caller confirms that a send
+    /// actually came back from Slack rather than merely being dispatched.
+    pub fn message_texts(&self) -> Vec<String> {
+        self.transcript
+            .entries()
+            .iter()
+            .map(|entry| entry.message.text.clone())
+            .collect()
     }
 
     /// Reload the newest page, discarding what is on screen.
@@ -405,7 +420,12 @@ impl ChannelView {
 
     // ------------------------------------------------------------ commands
 
-    fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    /// Post `text` to the open conversation.
+    ///
+    /// The command the composer invokes, and the seam anything else that wants
+    /// to post here goes through — a quick reply from the activity list, an
+    /// end-to-end test — so there is one path to Slack and not several.
+    pub fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(channel) = self.channel.clone() else {
             return;
         };
@@ -1128,6 +1148,8 @@ impl ChannelView {
         }
 
         div()
+            // The cache is set before `id`, because it belongs to `Div`.
+            .image_cache(self.images.clone())
             .id("transcript")
             .flex_1()
             .min_h_0()

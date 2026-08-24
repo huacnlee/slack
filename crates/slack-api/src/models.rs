@@ -225,6 +225,9 @@ pub struct File {
     pub thumb_360: Option<String>,
     #[serde(default)]
     pub thumb_720: Option<String>,
+    /// A still frame, for a video.
+    #[serde(default)]
+    pub thumb_video: Option<String>,
 }
 
 impl File {
@@ -232,6 +235,12 @@ impl File {
         self.mimetype
             .as_deref()
             .is_some_and(|m| m.starts_with("image/"))
+    }
+
+    pub fn is_video(&self) -> bool {
+        self.mimetype
+            .as_deref()
+            .is_some_and(|m| m.starts_with("video/"))
     }
 
     pub fn display_name(&self) -> &str {

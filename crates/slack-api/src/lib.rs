@@ -21,6 +21,7 @@ mod error;
 mod methods;
 
 pub mod cache;
+pub mod dotenv;
 pub mod emoji;
 pub mod markup;
 pub mod models;

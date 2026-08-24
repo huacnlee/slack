@@ -25,6 +25,7 @@ oauth_config:
       - emoji:read
       - dnd:read
       - dnd:write
+      - files:read
       - files:write
       - search:read
       - stars:read

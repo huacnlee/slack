@@ -17,7 +17,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::popover::Popover;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
-    ActiveTheme, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
     avatar::Avatar,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
@@ -380,10 +380,41 @@ impl MessageRow {
                     // Shown from the local copy: Slack's own thumbnail URLs
                     // need the token, which the image loader cannot send.
                     .when_some(attachment.thumbnail.clone(), |this, path| {
+                        let is_video = file.is_video();
                         this.child(
-                            img(ImageSource::Resource(Resource::Path(path)))
-                                .max_w(px(360.))
-                                .rounded(cx.theme().radius),
+                            div()
+                                .relative()
+                                .child(
+                                    img(ImageSource::Resource(Resource::Path(path)))
+                                        .max_w(px(360.))
+                                        .rounded(cx.theme().radius),
+                                )
+                                // A video's thumbnail is a still frame, and a
+                                // still frame that cannot be told from a photo
+                                // is a broken image as far as a reader knows.
+                                .when(is_video, |this| {
+                                    this.child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .size(px(44.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .rounded_full()
+                                                    .bg(cx.theme().background.opacity(0.75))
+                                                    .child(
+                                                        Icon::new(IconName::Play)
+                                                            .text_color(cx.theme().foreground),
+                                                    ),
+                                            ),
+                                    )
+                                }),
                         )
                     })
                     .into_any_element()

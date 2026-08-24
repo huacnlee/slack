@@ -10,6 +10,7 @@ name = "slack"
 path = "src/main.rs"
 
 [dependencies]
+slack-api.workspace = true
 slack-ui.workspace = true
 
 anyhow.workspace = true

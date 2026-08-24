@@ -81,9 +81,13 @@ fn token_file() -> PathBuf {
 /// Returns `Ok(None)` when no token has been stored yet — that is the ordinary
 /// first-run state, not an error.
 pub fn load() -> Result<Option<(String, TokenLocation)>, StoreError> {
-    if let Ok(token) = std::env::var(ENV_TOKEN)
-        && !token.trim().is_empty()
-    {
+    // The process environment first, then `.env`, so a token set on the
+    // command line still wins and examples and tests find the same token the
+    // application does.
+    let from_env = std::env::var(ENV_TOKEN)
+        .ok()
+        .or_else(|| crate::dotenv::get(ENV_TOKEN));
+    if let Some(token) = from_env.filter(|t| !t.trim().is_empty()) {
         let valid = validate(&token)?;
         return Ok(Some((valid.to_string(), TokenLocation::Environment)));
     }

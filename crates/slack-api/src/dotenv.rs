@@ -1,16 +1,33 @@
 //! Reading configuration from a `.env` file.
 //!
-//! The token backend and a few other choices are environment variables, which
-//! is awkward to retype on every launch during development. A `.env` beside
-//! the working directory — or in the config directory for an installed copy —
+//! The token and a few other choices are environment variables, which is
+//! awkward to retype on every launch during development. A `.env` beside the
+//! working directory — or in the config directory for an installed copy —
 //! sets them once.
 //!
 //! Existing environment variables always win: a file must never silently
 //! override something the caller set deliberately on the command line.
+//!
+//! This lives beside the token store rather than in the application, because
+//! examples and tests read the token too and should find it the same way the
+//! application does.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Read one variable from the `.env` files, without touching the environment.
+///
+/// Used by the token store: a library that quietly rewrote the process
+/// environment as a side effect of a lookup would be a surprise.
+pub fn get(key: &str) -> Option<String> {
+    candidates()
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .flat_map(|contents| parse(&contents))
+        .find(|(found, _)| found == key)
+        .map(|(_, value)| value)
+}
 
 /// Load `.env` from the working directory and the config directory.
 ///
@@ -30,7 +47,7 @@ fn candidates() -> Vec<PathBuf> {
     if let Ok(cwd) = env::current_dir() {
         paths.push(cwd.join(".env"));
     }
-    paths.push(slack_ui::config_dir().join(".env"));
+    paths.push(crate::store::config_dir().join(".env"));
     paths
 }
 
@@ -90,6 +107,17 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_single_variable_can_be_read_without_touching_the_environment() {
+        // `get` reads the same shapes `parse` does; the file lookup itself is
+        // covered by the application actually starting.
+        let pairs = parse("SLACK_TOKEN=xoxp-1234567890-abcdef");
+        assert_eq!(
+            pairs,
+            vec![("SLACK_TOKEN".into(), "xoxp-1234567890-abcdef".into())]
+        );
+    }
 
     #[test]
     fn plain_assignments_are_read() {

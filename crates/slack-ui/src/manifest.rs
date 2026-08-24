@@ -23,7 +23,8 @@ pub const APP_DOCS: &str = "https://api.slack.com/apps";
 /// custom emoji, `users:write` and `dnd:*` presence and notification pausing,
 /// the `*:write` family the read marker (so other Slack clients agree with
 /// this one about what you have read), `files:write` attachments,
-/// `search:read` message search, and `stars:read` the conversations you
+/// `files:read` the image previews in a transcript, `files:write` attaching
+/// one, `search:read` message search, and `stars:read` the conversations you
 /// starred in Slack.
 pub const REQUIRED_SCOPES: &[&str] = &[
     "channels:read",
@@ -46,6 +47,7 @@ pub const REQUIRED_SCOPES: &[&str] = &[
     "emoji:read",
     "dnd:read",
     "dnd:write",
+    "files:read",
     "files:write",
     "search:read",
     "stars:read",

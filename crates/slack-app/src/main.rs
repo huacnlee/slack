@@ -1,7 +1,6 @@
 //! A Slack desktop client built on GPUI.
 
 mod assets;
-mod dotenv;
 
 use gpui::{App, AppContext as _, Styled as _, WindowBounds, WindowOptions, px, size};
 use gpui_component::{ActiveTheme as _, Root, TitleBar};
@@ -23,7 +22,7 @@ fn main() {
     }
 
     // Before anything reads the environment, including the token store.
-    let loaded = dotenv::load();
+    let loaded = slack_api::dotenv::load();
     env_logger::init();
     for path in loaded {
         log::info!("loaded settings from {}", path.display());

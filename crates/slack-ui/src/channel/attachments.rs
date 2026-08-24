@@ -61,22 +61,62 @@ impl Thumbnails {
 
 /// The files in `messages` that have a thumbnail worth fetching.
 ///
-/// Only images: everything else renders as a named link, which needs no bytes.
+/// Anything Slack made a thumbnail for — images and videos. Everything else
+/// renders as a named link, which needs no bytes.
 pub fn wanted(files: impl IntoIterator<Item = File>, known: &Thumbnails) -> Vec<File> {
     files
         .into_iter()
-        .filter(|file| file.is_image())
         .filter(|file| thumbnail_url(file).is_some())
         .filter(|file| !file.id.is_empty() && known.get(&file.id).is_none())
         .collect()
 }
 
 /// The thumbnail to fetch for a file, preferring the smaller one.
+///
+/// A video has no `thumb_360`; Slack gives it `thumb_video`, which is a still
+/// frame and exactly what a transcript should show for one.
 pub fn thumbnail_url(file: &File) -> Option<&str> {
     file.thumb_360
         .as_deref()
         .or(file.thumb_720.as_deref())
+        .or(file.thumb_video.as_deref())
         .filter(|url| url.starts_with("https://"))
+}
+
+/// Whether these bytes start the way an image does.
+///
+/// A content-type header would be easier to trust, but Slack's sign-in page
+/// comes back as `200 text/html`, so the bytes are the only honest signal.
+fn looks_like_an_image(bytes: &[u8]) -> bool {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const JPEG: &[u8] = b"\xff\xd8\xff";
+    const GIF: &[u8] = b"GIF8";
+
+    bytes.starts_with(PNG)
+        || bytes.starts_with(JPEG)
+        || bytes.starts_with(GIF)
+        // WEBP is `RIFF....WEBP`.
+        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"))
+}
+
+/// The file extension to store a thumbnail under.
+///
+/// GPUI's image loader picks its decoder from the extension, so a cached file
+/// saved without one is handed to the SVG parser and fails. Slack's thumbnails
+/// are always JPEG or PNG regardless of the original's type — a thumbnail of a
+/// GIF or a video is a still.
+fn thumbnail_extension(url: &str) -> &'static str {
+    let name = url.split('?').next().unwrap_or(url);
+    match name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+    {
+        Some(ext) if ext == "png" => "png",
+        Some(ext) if ext == "gif" => "gif",
+        // Slack serves `_360.jpg`, and anything unrecognised is far more
+        // likely to be a JPEG than an SVG, which is what the default was.
+        _ => "jpg",
+    }
 }
 
 /// Fetch one thumbnail into the cache and return where it landed.
@@ -84,12 +124,12 @@ pub fn thumbnail_url(file: &File) -> Option<&str> {
 /// A file already on disk is returned without a request, which is what makes
 /// a second launch instant and an offline one work at all.
 pub async fn fetch(cache: &Cache, client: &SlackClient, file: &File) -> Option<Arc<Path>> {
-    let path = path_for(cache, &file.id);
+    let url = thumbnail_url(file)?;
+    let path = path_for(cache, &file.id, thumbnail_extension(url));
     if path.exists() {
         return Some(path.into());
     }
 
-    let url = thumbnail_url(file)?;
     let bytes = match client.download(url, MAX_THUMBNAIL_BYTES).await {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -97,6 +137,18 @@ pub async fn fetch(cache: &Cache, client: &SlackClient, file: &File) -> Option<A
             return None;
         }
     };
+
+    // Slack answers an unauthorized file request with its sign-in page rather
+    // than an error status. Writing that to the cache under a `.png` name
+    // makes every later render try to decode a web page.
+    if !looks_like_an_image(&bytes) {
+        log::warn!(
+            "Slack did not return an image for {}; the token most likely \
+             lacks the files:read scope",
+            file.id
+        );
+        return None;
+    }
 
     if let Some(parent) = path.parent()
         && let Err(err) = std::fs::create_dir_all(parent)
@@ -121,12 +173,15 @@ pub async fn fetch(cache: &Cache, client: &SlackClient, file: &File) -> Option<A
 
 /// Where a file's thumbnail lives. The id is sanitized because it arrives from
 /// the network and becomes a file name.
-fn path_for(cache: &Cache, file_id: &str) -> PathBuf {
+fn path_for(cache: &Cache, file_id: &str, extension: &str) -> PathBuf {
     let name: String = file_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .collect();
-    cache.root().join("thumbnails").join(format!("{name}.img"))
+    cache
+        .root()
+        .join("thumbnails")
+        .join(format!("{name}.{extension}"))
 }
 
 #[cfg(test)]
@@ -143,16 +198,24 @@ mod tests {
     }
 
     #[test]
-    fn only_images_with_a_thumbnail_are_wanted() {
-        let mut pdf = image("F2");
-        pdf.mimetype = Some("application/pdf".to_string());
+    fn a_file_with_no_thumbnail_is_not_wanted() {
         let mut no_thumb = image("F3");
         no_thumb.thumb_360 = None;
         no_thumb.thumb_720 = None;
+        no_thumb.thumb_video = None;
 
-        let wanted = wanted([image("F1"), pdf, no_thumb], &Thumbnails::default());
+        let wanted = wanted([image("F1"), no_thumb], &Thumbnails::default());
         assert_eq!(wanted.len(), 1);
         assert_eq!(wanted[0].id, "F1");
+    }
+
+    #[test]
+    fn anything_slack_made_a_thumbnail_for_is_wanted() {
+        // Slack renders a first page for a PDF; showing it beats a filename.
+        let mut pdf = image("F2");
+        pdf.mimetype = Some("application/pdf".to_string());
+
+        assert_eq!(wanted([pdf], &Thumbnails::default()).len(), 1);
     }
 
     #[test]
@@ -187,8 +250,45 @@ mod tests {
     #[test]
     fn a_file_id_cannot_escape_the_cache_directory() {
         let cache = Cache::at("/tmp/slack-thumbs-test");
-        let path = path_for(&cache, "../../etc/passwd");
+        let path = path_for(&cache, "../../etc/passwd", "jpg");
         assert!(path.starts_with(cache.root()));
         assert!(!path.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn a_web_page_is_not_mistaken_for_an_image() {
+        assert!(!looks_like_an_image(b"<!DOCTYPE html><html lang=\"en\">"));
+        assert!(!looks_like_an_image(b""));
+        assert!(!looks_like_an_image(b"{\"ok\":false}"));
+    }
+
+    #[test]
+    fn the_formats_slack_serves_are_recognised() {
+        assert!(looks_like_an_image(b"\x89PNG\r\n\x1a\nrest"));
+        assert!(looks_like_an_image(b"\xff\xd8\xffrest"));
+        assert!(looks_like_an_image(b"GIF89a"));
+        assert!(looks_like_an_image(b"RIFF\x00\x00\x00\x00WEBPVP8 "));
+    }
+
+    #[test]
+    fn a_thumbnail_is_stored_under_a_decodable_extension() {
+        assert_eq!(thumbnail_extension("https://x/a_360.png"), "png");
+        assert_eq!(thumbnail_extension("https://x/a_360.jpg"), "jpg");
+        assert_eq!(thumbnail_extension("https://x/a_360.gif"), "gif");
+        // No extension, or one nobody recognises, is not an SVG.
+        assert_eq!(thumbnail_extension("https://x/a_360"), "jpg");
+        assert_eq!(thumbnail_extension("https://x/a.bin?token=1"), "jpg");
+    }
+
+    #[test]
+    fn a_video_thumbnail_is_wanted_too() {
+        let mut video = image("F9");
+        video.mimetype = Some("video/mp4".to_string());
+        video.thumb_360 = None;
+        video.thumb_720 = None;
+        video.thumb_video = Some("https://files.slack.com/v_video.jpg".to_string());
+
+        let wanted = wanted([video], &Thumbnails::default());
+        assert_eq!(wanted.len(), 1);
     }
 }

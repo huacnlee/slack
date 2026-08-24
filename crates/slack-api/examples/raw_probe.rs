@@ -1,52 +1,55 @@
 use serde_json::Value;
-use slack_api::{SlackClient, store};
+use slack_api::{ALL_CONVERSATION_TYPES, SlackClient, store};
 
 fn main() {
     let (token, _) = store::load().unwrap().unwrap();
     let client = SlackClient::new(token).unwrap();
     futures::executor::block_on(async {
-        let me = client.auth_test().await.unwrap();
-        for q in [
-            format!("@{}", me.user),
-            format!("to:@{}", me.user),
-            format!("<@{}>", me.user_id),
-        ] {
-            match client.search_messages(&q, 3).await {
-                Ok(found) => {
+        let convs = client
+            .list_conversations(ALL_CONVERSATION_TYPES)
+            .await
+            .unwrap();
+        let mut looked = 0;
+        for c in convs
+            .iter()
+            .filter(|c| c.name.contains("cli-skill") || c.name.contains("看板"))
+        {
+            let Ok(v) = client
+                .get::<Value>(
+                    "conversations.history",
+                    &[("channel", c.id.clone()), ("limit", "60".into())],
+                )
+                .await
+            else {
+                continue;
+            };
+            for m in v["messages"].as_array().unwrap_or(&vec![]) {
+                for f in m["files"].as_array().unwrap_or(&vec![]) {
+                    looked += 1;
+                    let mut keys: Vec<&String> = f
+                        .as_object()
+                        .map(|o| o.keys().collect())
+                        .unwrap_or_default();
+                    keys.sort();
+                    println!("mimetype={} filetype={}", f["mimetype"], f["filetype"]);
                     println!(
-                        "query {q:?}: total={} shown={}",
-                        found.total,
-                        found.matches.len()
+                        "  has thumb_360={} thumb_720={} thumb_video={} mp4={} url_private={}",
+                        !f["thumb_360"].is_null(),
+                        !f["thumb_720"].is_null(),
+                        !f["thumb_video"].is_null(),
+                        !f["mp4"].is_null(),
+                        !f["url_private"].is_null()
                     );
-                    for m in found.matches.iter().take(2) {
-                        println!(
-                            "   [{}] {} :: {}",
-                            m.channel
-                                .as_ref()
-                                .map(|c| c.name.clone())
-                                .unwrap_or_default(),
-                            m.username.clone().unwrap_or_default(),
-                            m.text
-                                .chars()
-                                .take(60)
-                                .collect::<String>()
-                                .replace('\n', " ")
-                        );
+                    println!(
+                        "  keys={:?}",
+                        keys.iter().map(|k| k.as_str()).collect::<Vec<_>>()
+                    );
+                    if looked >= 4 {
+                        return;
                     }
                 }
-                Err(e) => println!("query {q:?}: {e}"),
             }
         }
-        // Does reactions.list show reactions *to* my messages?
-        match client
-            .get::<Value>("reactions.list", &[("limit", "3".into())])
-            .await
-        {
-            Ok(v) => println!(
-                "\nreactions.list: keys={:?}",
-                v.as_object().map(|o| o.keys().collect::<Vec<_>>())
-            ),
-            Err(e) => println!("\nreactions.list: {e}"),
-        }
+        println!("files seen: {looked}");
     });
 }
