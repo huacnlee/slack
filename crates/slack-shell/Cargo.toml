@@ -1,0 +1,29 @@
+[package]
+name = "slack-shell"
+description = "The window: rail, sidebar, and the panel features are shown in."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+slack-activity.workspace = true
+slack-api.workspace = true
+slack-auth.workspace = true
+slack-channel.workspace = true
+slack-people.workspace = true
+slack-search.workspace = true
+slack-ui.workspace = true
+slack-workspace.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

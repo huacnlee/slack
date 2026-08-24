@@ -6594,6 +6594,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slack-activity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-api",
+ "slack-people",
+ "slack-ui",
+ "slack-workspace",
+]
+
+[[package]]
 name = "slack-api"
 version = "0.1.0"
 dependencies = [
@@ -6626,11 +6645,12 @@ dependencies = [
  "reqwest_client",
  "rust-embed",
  "slack-api",
+ "slack-shell",
  "slack-ui",
 ]
 
 [[package]]
-name = "slack-ui"
+name = "slack-auth"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6640,10 +6660,118 @@ dependencies = [
  "gpui-base",
  "gpui-component",
  "log",
- "lru",
  "serde",
  "serde_json",
  "slack-api",
+ "slack-ui",
+]
+
+[[package]]
+name = "slack-channel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-api",
+ "slack-people",
+ "slack-ui",
+ "slack-workspace",
+]
+
+[[package]]
+name = "slack-people"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-api",
+ "slack-ui",
+ "slack-workspace",
+]
+
+[[package]]
+name = "slack-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-api",
+ "slack-ui",
+ "slack-workspace",
+]
+
+[[package]]
+name = "slack-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-activity",
+ "slack-api",
+ "slack-auth",
+ "slack-channel",
+ "slack-people",
+ "slack-search",
+ "slack-ui",
+ "slack-workspace",
+]
+
+[[package]]
+name = "slack-ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gpui",
+ "gpui-component",
+ "log",
+ "lru",
+ "slack-api",
+]
+
+[[package]]
+name = "slack-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "serde",
+ "serde_json",
+ "slack-api",
+ "slack-ui",
 ]
 
 [[package]]

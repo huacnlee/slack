@@ -5,7 +5,7 @@ mod assets;
 use gpui::{App, AppContext as _, Styled as _, WindowBounds, WindowOptions, px, size};
 use gpui_component::{ActiveTheme as _, Root, TitleBar};
 
-use slack_ui::app::SlackApp;
+use slack_shell::app::SlackApp;
 
 /// A window narrower than this cannot show a sidebar and a transcript at once.
 const MIN_WIDTH: f32 = 720.;
@@ -33,7 +33,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         // Must run before anything touches a component.
         gpui_component::init(cx);
-        slack_ui::app::init(cx);
+        slack_shell::app::init(cx);
         slack_ui::theme::follow_system_appearance(cx);
 
         // Remote avatars and custom emoji are ordinary images to GPUI; it

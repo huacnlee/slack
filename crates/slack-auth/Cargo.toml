@@ -1,19 +1,23 @@
 [package]
-name = "slack-ui"
-description = "Foundations every feature builds on: theme, icons, images, time, notifications."
+name = "slack-auth"
+description = "Getting a token and proving it works."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
 slack-api.workspace = true
+slack-ui.workspace = true
 
 anyhow.workspace = true
 chrono.workspace = true
+futures.workspace = true
 gpui.workspace = true
+gpui-base = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component.workspace = true
 log.workspace = true
-lru = "0.12"
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

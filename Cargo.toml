@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/slack-api", "crates/slack-ui", "crates/slack-app"]
-default-members = ["crates/slack-app"]
+members = ["crates/slack-api", "crates/slack-ui", "crates/slack-workspace", "crates/slack-people", "crates/slack-channel", "crates/slack-activity", "crates/slack-search", "crates/slack-auth", "crates/slack-shell", "crates/slack-app"]
+default-members = ["crates/slack-api", "crates/slack-ui", "crates/slack-workspace", "crates/slack-people", "crates/slack-channel", "crates/slack-activity", "crates/slack-search", "crates/slack-auth", "crates/slack-shell", "crates/slack-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,13 @@ publish = false
 [workspace.dependencies]
 slack-api = { path = "crates/slack-api" }
 slack-ui = { path = "crates/slack-ui" }
+slack-workspace = { path = "crates/slack-workspace" }
+slack-people = { path = "crates/slack-people" }
+slack-channel = { path = "crates/slack-channel" }
+slack-activity = { path = "crates/slack-activity" }
+slack-search = { path = "crates/slack-search" }
+slack-auth = { path = "crates/slack-auth" }
+slack-shell = { path = "crates/slack-shell" }
 
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }

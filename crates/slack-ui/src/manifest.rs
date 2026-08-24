@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(
             checked_in,
             manifest_yaml().as_ref(),
-            "manifest.yml is stale — regenerate it from slack_ui::manifest::manifest_yaml()"
+            "manifest.yml is stale — regenerate it from crate::manifest::manifest_yaml()"
         );
     }
 
