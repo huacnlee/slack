@@ -24,6 +24,8 @@ actions!(
         Reload,
         /// Switch between the light and dark themes.
         ToggleTheme,
+        /// Close the window.
+        CloseWindow,
         /// Leave the application.
         Quit,
     ]
@@ -45,6 +47,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-r", Reload, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("secondary-shift-t", ToggleTheme, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("escape", CloseThread, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new("secondary-w", CloseWindow, None),
         KeyBinding::new("secondary-q", Quit, None),
     ]);
 }
@@ -58,6 +61,7 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("Slack").items(vec![
             MenuItem::action("Reload workspace", Reload),
             MenuItem::separator(),
+            MenuItem::action("Close Window", CloseWindow),
             MenuItem::action("Quit Slack", Quit),
         ]),
         Menu::new("Go").items(vec![

@@ -443,11 +443,17 @@ impl WorkspaceStore {
             match client.list_users(DIRECTORY_LIMIT).await {
                 Ok(users) => {
                     _ = this.update(cx, |this, cx| {
-                        this.users = users
-                            .iter()
-                            .map(|u| (SharedString::from(u.id.clone()), u.clone()))
-                            .collect();
-                        this.cache.write(CACHE_USERS, &users);
+                        // Merged, not replaced. Members of shared channels are
+                        // not in `users.list` and are looked up one at a time;
+                        // replacing the map would discard those the moment the
+                        // directory finished loading.
+                        this.users.extend(
+                            users
+                                .iter()
+                                .map(|u| (SharedString::from(u.id.clone()), u.clone())),
+                        );
+                        let directory: Vec<User> = this.users.values().cloned().collect();
+                        this.cache.write(CACHE_USERS, &directory);
                         this.rename_direct_messages();
                         this.sort_conversations();
                         this.persist();

@@ -8,7 +8,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled,
+    Subscription, Window, div, px,
 };
 use gpui_component::{
     ActiveTheme, Icon, IconName, Root, Sizable as _, TitleBar,
@@ -216,6 +217,8 @@ impl Render for SlackApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
+            .key_context("SlackWindow")
+            .on_action(close_window)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
@@ -234,4 +237,12 @@ pub fn init(cx: &mut App) {
     crate::actions::init(cx);
     cx.set_menus(crate::actions::menus());
     cx.on_action(|_: &crate::actions::Quit, cx| cx.quit());
+}
+
+/// Window-scoped commands, registered on the window's root.
+///
+/// Closing is a window command rather than an application one: `cx.quit` ends
+/// the process, and ⌘W should not.
+fn close_window(_: &crate::actions::CloseWindow, window: &mut Window, _: &mut App) {
+    window.remove_window();
 }

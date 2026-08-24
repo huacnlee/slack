@@ -447,21 +447,27 @@ impl Render for WorkspaceView {
             // navigation that must never move or change width.
             .child(self.rail.clone())
             .child(
-                h_resizable("shell-panes")
-                    .with_state(&self.shell_panes)
-                    .child(
-                        resizable_panel()
-                            .size(px(SIDEBAR_DEFAULT_WIDTH))
-                            .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
-                            .child(match self.pane {
-                                Pane::Chats => self.sidebar.clone().into_any_element(),
-                                Pane::DirectMessages => {
-                                    self.direct_messages.clone().into_any_element()
-                                }
-                                Pane::Activity => self.activity.clone().into_any_element(),
-                            }),
-                    )
-                    .child(resizable_panel().child(work)),
+                // The group fills what the rail leaves and is allowed to
+                // shrink. Without both, a long URL in a message sizes the
+                // pane to its own width and pushes the conversation past the
+                // window edge.
+                div().flex_1().min_w_0().h_full().child(
+                    h_resizable("shell-panes")
+                        .with_state(&self.shell_panes)
+                        .child(
+                            resizable_panel()
+                                .size(px(SIDEBAR_DEFAULT_WIDTH))
+                                .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
+                                .child(match self.pane {
+                                    Pane::Chats => self.sidebar.clone().into_any_element(),
+                                    Pane::DirectMessages => {
+                                        self.direct_messages.clone().into_any_element()
+                                    }
+                                    Pane::Activity => self.activity.clone().into_any_element(),
+                                }),
+                        )
+                        .child(resizable_panel().child(work)),
+                ),
             )
     }
 }
