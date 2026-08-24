@@ -22,6 +22,7 @@ use crate::activity::activity_view::{ActivityEvent, ActivityView};
 use crate::channel::channel_view::{ChannelEvent, ChannelView};
 use crate::channel::thread_view::{ThreadEvent, ThreadView};
 use crate::search::search_view::{SearchEvent, SearchView};
+use crate::workspace::direct_messages::DirectMessagesView;
 use crate::workspace::history::History;
 use crate::workspace::quick_switcher::{QuickSwitcher, QuickSwitcherEvent};
 use crate::workspace::rail::{Pane, Rail, RailEvent};
@@ -51,6 +52,7 @@ pub struct WorkspaceView {
     store: Entity<WorkspaceStore>,
     rail: Entity<Rail>,
     sidebar: Entity<SidebarView>,
+    direct_messages: Entity<DirectMessagesView>,
     activity: Entity<ActivityView>,
     /// Which navigation pane the rail is pointing at.
     pane: Pane,
@@ -73,6 +75,7 @@ impl WorkspaceView {
     pub fn new(store: Entity<WorkspaceStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rail = cx.new(|_| Rail::new(store.clone()));
         let sidebar = cx.new(|cx| SidebarView::new(store.clone(), window, cx));
+        let direct_messages = cx.new(|cx| DirectMessagesView::new(store.clone(), window, cx));
         let activity = cx.new(|cx| ActivityView::new(store.clone(), cx));
         let channel = cx.new(|cx| ChannelView::new(store.clone(), window, cx));
         let quick_switcher = cx.new(|cx| QuickSwitcher::new(store.clone(), window, cx));
@@ -105,6 +108,7 @@ impl WorkspaceView {
             store,
             rail,
             sidebar,
+            direct_messages,
             activity,
             pane: Pane::Chats,
             history: History::default(),
@@ -451,6 +455,9 @@ impl Render for WorkspaceView {
                             .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
                             .child(match self.pane {
                                 Pane::Chats => self.sidebar.clone().into_any_element(),
+                                Pane::DirectMessages => {
+                                    self.direct_messages.clone().into_any_element()
+                                }
                                 Pane::Activity => self.activity.clone().into_any_element(),
                             }),
                     )

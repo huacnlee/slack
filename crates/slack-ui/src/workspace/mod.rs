@@ -1,3 +1,4 @@
+pub mod direct_messages;
 pub mod history;
 pub mod quick_switcher;
 pub mod rail;

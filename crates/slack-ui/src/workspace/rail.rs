@@ -35,15 +35,17 @@ const SNOOZE_CHOICES: &[(u32, &str)] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Chats,
+    DirectMessages,
     Activity,
 }
 
 impl Pane {
-    const ALL: [Pane; 2] = [Pane::Chats, Pane::Activity];
+    const ALL: [Pane; 3] = [Pane::Chats, Pane::DirectMessages, Pane::Activity];
 
     fn label(self) -> &'static str {
         match self {
             Pane::Chats => "Chats",
+            Pane::DirectMessages => "Direct messages",
             Pane::Activity => "Activity",
         }
     }
@@ -51,6 +53,7 @@ impl Pane {
     fn icon(self) -> Icon {
         match self {
             Pane::Chats => Icon::new(SlackIcon::Chats),
+            Pane::DirectMessages => Icon::new(SlackIcon::DirectMessages),
             Pane::Activity => Icon::new(IconName::Bell),
         }
     }
@@ -58,6 +61,7 @@ impl Pane {
     fn id(self) -> &'static str {
         match self {
             Pane::Chats => "rail-chats",
+            Pane::DirectMessages => "rail-dms",
             Pane::Activity => "rail-activity",
         }
     }

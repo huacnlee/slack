@@ -26,6 +26,8 @@ pub enum SlackIcon {
     Thread,
     /// Conversations, for the navigation rail.
     Chats,
+    /// Direct messages, for the navigation rail.
+    DirectMessages,
     /// Add a reaction.
     SmilePlus,
     /// Attach a file.
@@ -53,6 +55,7 @@ impl IconNamed for SlackIcon {
             SlackIcon::AtSign => "at-sign",
             SlackIcon::Thread => "message-square-reply",
             SlackIcon::Chats => "message-circle",
+            SlackIcon::DirectMessages => "messages-square",
             SlackIcon::SmilePlus => "smile-plus",
             SlackIcon::Paperclip => "paperclip",
             SlackIcon::Send => "send",
