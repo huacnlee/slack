@@ -25,6 +25,7 @@ pub mod dotenv;
 pub mod emoji;
 pub mod markup;
 pub mod models;
+pub mod rtm;
 pub mod store;
 
 pub use cache::{Cache, Freshness};
@@ -33,3 +34,4 @@ pub use error::{Error, Result};
 pub use methods::{
     ALL_CONVERSATION_TYPES, MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, SearchMatch, SearchResults,
 };
+pub use rtm::RtmEvent;

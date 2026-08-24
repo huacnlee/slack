@@ -20,19 +20,25 @@
 //! both. That is why the sweep exists and why its results are persisted.
 
 mod conversation;
+mod realtime;
 mod refresh;
 mod sweep;
 
-pub use conversation::{Connectivity, Conversation, LoadState, Section};
+pub use conversation::{Connectivity, Conversation, LoadState, Section, matching};
+pub use realtime::RealtimeState;
+use realtime::Typist;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use gpui::{AppContext as _, Context, EventEmitter, SharedString, Task};
 
 use slack_api::emoji::EmojiIndex;
-use slack_api::models::{AuthIdentity, Channel, ChannelKind, DndState, Presence, Ts, User};
-use slack_api::{ALL_CONVERSATION_TYPES, Cache, SlackClient};
+use slack_api::models::{
+    AuthIdentity, Channel, ChannelKind, DndState, Message, Presence, Ts, User,
+};
+use slack_api::{ALL_CONVERSATION_TYPES, Cache, RtmEvent, SlackClient};
 
 use crate::snapshot::WorkspaceSnapshot;
 
@@ -81,6 +87,10 @@ pub enum WorkspaceEvent {
     Failed(SharedString),
     /// The token stopped working; the shell should return to sign-in.
     SignedOut,
+    /// Something happened in the workspace, as it happened. The store has
+    /// already applied what it owns; this is for whoever is showing the
+    /// messages themselves.
+    Realtime(RtmEvent),
 }
 
 pub struct WorkspaceStore {
@@ -100,6 +110,10 @@ pub struct WorkspaceStore {
     connectivity: Connectivity,
     /// How often to look for new messages, widened once Slack rate-limits us.
     activity_interval: Duration,
+    realtime: RealtimeState,
+    /// Who is typing where. Entries expire rather than being cleared, since
+    /// Slack never says anyone stopped.
+    typing: HashMap<SharedString, Vec<Typist>>,
     _polling: Vec<Task<()>>,
 }
 
@@ -123,6 +137,8 @@ impl WorkspaceStore {
             load_state: LoadState::Loading,
             connectivity: Connectivity::Online,
             activity_interval: ACTIVE_POLL,
+            realtime: RealtimeState::Connecting,
+            typing: HashMap::new(),
             _polling: Vec::new(),
         };
 
@@ -135,7 +151,13 @@ impl WorkspaceStore {
             store.users.len()
         );
         store.refresh(cx);
-        store._polling = vec![store.spawn_activity_poll(cx), store.spawn_sweep(cx)];
+        // The socket does the real work; the poll and the sweep stay as the
+        // floor for a token Slack will not open one for.
+        store._polling = vec![
+            store.spawn_realtime(cx),
+            store.spawn_activity_poll(cx),
+            store.spawn_sweep(cx),
+        ];
         store
     }
 

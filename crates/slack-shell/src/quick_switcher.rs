@@ -87,29 +87,7 @@ impl QuickSwitcher {
             return;
         }
 
-        let mut ranked: Vec<(u8, &Conversation)> = store
-            .listable()
-            .filter_map(|conversation| {
-                let name = conversation.name.to_lowercase();
-                if name.starts_with(&query) {
-                    Some((0, conversation))
-                } else if name.contains(&query) {
-                    Some((1, conversation))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // The store lists alphabetically; this only promotes prefix matches
-        // above substring ones without disturbing that.
-        ranked.sort_by_key(|(rank, _)| *rank);
-        self.matches = ranked
-            .into_iter()
-            .take(MAX_RESULTS)
-            .map(|(_, conversation)| conversation.clone())
-            .collect();
-
+        self.matches = slack_workspace::store::matching(store.listable(), &query, MAX_RESULTS);
         cx.notify();
     }
 

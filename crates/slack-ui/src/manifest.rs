@@ -31,6 +31,8 @@ pub const REQUIRED_SCOPES: &[&str] = &[
     "groups:read",
     "im:read",
     "mpim:read",
+    // The realtime socket: arrivals and typing, the moment they happen.
+    "rtm:stream",
     "channels:history",
     "groups:history",
     "im:history",

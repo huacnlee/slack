@@ -5,6 +5,7 @@
 //! modelled in one place cannot drift between the keyboard and the menu.
 
 use super::*;
+use crate::forward::ForwardView;
 
 impl ChannelView {
     /// Post `text` to the open conversation.
@@ -55,15 +56,30 @@ impl ChannelView {
         let Some(channel) = self.channel.clone() else {
             return;
         };
+        // Clearing a message and saving it is how Slack's own client is asked
+        // to delete one. Answering "the message is empty" would be true and
+        // useless; ask the question the reader was reaching for.
+        if text.trim().is_empty() {
+            self.cancel_edit(cx);
+            self.confirm_delete(ts, window, cx);
+            return;
+        }
+
         let client = self.store.read(cx).client().clone();
 
         cx.spawn_in(window, async move |this, cx| {
             let result = client.update_message(&channel, &ts, &text).await;
 
-            _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(()) => {
+            _ = this.update_in(cx, |this, _, cx| match result {
+                Ok(message) => {
                     this.editing = None;
-                    this.fetch_latest(window, cx);
+                    // An edit moves nothing, so the one row is all that
+                    // changed. Refetching the page would cost a round trip and
+                    // a scroll jump to arrive back at the same order.
+                    this.transcript.set_text(&ts, message.text, message.edited);
+                    this.invalidate_row(&ts);
+                    this.persist(cx);
+                    cx.notify();
                 }
                 Err(err) => {
                     if let Some(session) = &this.editing {
@@ -201,6 +217,13 @@ impl ChannelView {
         .detach();
     }
 
+    /// Send a message on to another conversation.
+    pub(super) fn forward(&mut self, ts: Ts, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(channel) = self.channel.clone() {
+            ForwardView::open(self.store.clone(), channel, ts, window, cx);
+        }
+    }
+
     pub(super) fn copy_link(&mut self, ts: Ts, cx: &mut Context<Self>) {
         let Some(channel) = self.channel.clone() else {
             return;
@@ -222,6 +245,14 @@ impl ChannelView {
         .detach();
     }
 
+    /// Leave an edit without saving, putting the message back on screen.
+    pub(super) fn cancel_edit(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.editing.take() {
+            self.invalidate_row(&session.ts);
+        }
+        cx.notify();
+    }
+
     pub(super) fn start_edit(&mut self, ts: Ts, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.transcript.get(&ts) else {
             return;
@@ -237,12 +268,7 @@ impl ChannelView {
             let ts = ts.clone();
             move |this, composer, event, window, cx| match event {
                 ComposerEvent::Submit(text) => this.save_edit(ts.clone(), text.clone(), window, cx),
-                ComposerEvent::Cancel => {
-                    if let Some(session) = this.editing.take() {
-                        this.invalidate_row(&session.ts);
-                    }
-                    cx.notify();
-                }
+                ComposerEvent::Cancel => this.cancel_edit(cx),
                 _ => {
                     let _ = composer;
                 }

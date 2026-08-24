@@ -16,6 +16,7 @@
 
 mod commands;
 mod loading;
+mod realtime;
 mod rows;
 
 use rows::Row;
@@ -27,7 +28,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement, Render,
-    SharedString, Styled, Subscription, Window, div, list, px,
+    SharedString, Styled, Subscription, Window, div, list, px, rems,
 };
 use gpui_component::{
     ActiveTheme, Icon, Sizable as _, StyledExt as _, WindowExt as _,
@@ -315,6 +316,7 @@ impl ChannelView {
                 }
             }
             WorkspaceEvent::ActivityPolled => self.fetch_new(window, cx),
+            WorkspaceEvent::Realtime(event) => self.apply_realtime(event, window, cx),
             WorkspaceEvent::DirectoryChanged => cx.notify(),
             _ => {}
         }
@@ -367,6 +369,9 @@ impl ChannelView {
                 }),
             ),
             copy_link: Rc::new(cx.listener(|this, ts: &Ts, _, cx| this.copy_link(ts.clone(), cx))),
+            forward: Rc::new(
+                cx.listener(|this, ts: &Ts, window, cx| this.forward(ts.clone(), window, cx)),
+            ),
             open_file: Rc::new(|url: &SharedString, _: &mut Window, cx: &mut App| cx.open_url(url)),
             follow_link: self.link_handler(cx),
             resolve_name: self.name_resolver(cx),
@@ -416,6 +421,35 @@ impl ChannelView {
             // A broadcast names a group, which this client has no view of.
             Link::Broadcast(_) => {}
         })
+    }
+
+    /// Who is typing, in the line above the composer.
+    ///
+    /// The strip is always present, even when nobody is. Letting it appear and
+    /// disappear would shove the composer and the last line of the transcript
+    /// down and up again every few seconds — the reader is trying to read.
+    fn render_typing(&self, cx: &Context<Self>) -> impl IntoElement {
+        let names = self
+            .channel
+            .as_ref()
+            .map(|channel| self.store.read(cx).typing(channel))
+            .unwrap_or_default();
+
+        let line = match names.as_slice() {
+            [] => SharedString::default(),
+            [one] => format!("{one} is typing…").into(),
+            [one, two] => format!("{one} and {two} are typing…").into(),
+            _ => SharedString::from("Several people are typing…"),
+        };
+
+        h_flex()
+            .w_full()
+            .flex_shrink_0()
+            .h(rems(1.125))
+            .px_4()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(line)
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -526,11 +560,13 @@ impl Render for ChannelView {
                         .child(SharedString::from(format!("Sharing {name}…"))),
                 )
             })
+            .child(self.render_typing(cx))
             .child(
                 div()
                     .w_full()
                     .flex_shrink_0()
                     .p_3()
+                    .pt_0()
                     .child(self.composer.clone()),
             )
             .into_any_element()

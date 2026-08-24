@@ -7,7 +7,9 @@
 pub mod attachments;
 pub mod channel_view;
 pub mod composer;
+pub mod forward;
 pub mod markup_view;
 pub mod message_row;
+pub mod quote;
 pub mod thread_view;
 pub mod transcript;

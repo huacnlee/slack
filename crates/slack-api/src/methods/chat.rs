@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::client::SlackClient;
 use crate::error::{Error, Result};
-use crate::models::Ts;
+use crate::models::{Message, Ts};
 
 /// Slack's own limit for a single message body.
 pub const MAX_MESSAGE_CHARS: usize = 4000;
@@ -47,19 +47,57 @@ impl SlackClient {
         Ok(reply.ts)
     }
 
-    /// Edit a message the signed-in user owns.
-    pub async fn update_message(&self, channel: &str, ts: &Ts, text: &str) -> Result<()> {
+    /// Edit a message the signed-in user owns, and report it back as Slack now
+    /// holds it.
+    ///
+    /// The reply carries the stored message, not an acknowledgement. Returning
+    /// it saves the caller refetching a page of history to discover what its
+    /// own edit did — and what came back is authoritative where an optimistic
+    /// copy would only be a guess.
+    pub async fn update_message(&self, channel: &str, ts: &Ts, text: &str) -> Result<Message> {
         let text = text.trim();
         if text.is_empty() {
             return Err(Error::Other("the message is empty".into()));
         }
-        let _: serde_json::Value = self
+        if text.chars().count() > MAX_MESSAGE_CHARS {
+            return Err(Error::Slack("msg_too_long".into()));
+        }
+
+        #[derive(Deserialize)]
+        struct UpdateReply {
+            #[serde(default)]
+            ts: Ts,
+            #[serde(default)]
+            text: String,
+            #[serde(default)]
+            message: Option<Message>,
+        }
+
+        let reply: UpdateReply = self
             .post_json(
                 "chat.update",
-                json!({ "channel": channel, "ts": ts.as_str(), "text": text }),
+                json!({
+                    "channel": channel,
+                    "ts": ts.as_str(),
+                    "text": text,
+                    // Matches how the message was posted; without it an edit
+                    // would quietly strip the formatting the original had.
+                    "mrkdwn": true,
+                }),
             )
             .await?;
-        Ok(())
+
+        // `message` is the whole stored message and is what we want. Slack has
+        // been known to answer with only the top-level echo, so fall back to
+        // that rather than returning something blank.
+        let mut message = reply.message.unwrap_or_default();
+        if message.ts.as_str().is_empty() {
+            message.ts = reply.ts;
+        }
+        if message.text.is_empty() {
+            message.text = reply.text;
+        }
+        Ok(message)
     }
 
     pub async fn delete_message(&self, channel: &str, ts: &Ts) -> Result<()> {

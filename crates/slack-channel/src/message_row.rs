@@ -56,6 +56,8 @@ pub struct MessageActions {
     pub start_edit: OnMessage,
     pub delete: OnMessage,
     pub copy_link: OnMessage,
+    /// Send it on to another conversation.
+    pub forward: OnMessage,
     pub open_file: OnFile,
     pub follow_link: OnLink,
     /// Turns a mentioned id into a name.
@@ -83,6 +85,7 @@ pub struct MessageRow {
     reply_count: u32,
     repliers: Vec<SharedString>,
     edited: bool,
+    quotes: Rc<Vec<crate::quote::Quote>>,
     /// A continuation of the message above: no avatar, no repeated name.
     grouped: bool,
     /// Written by the signed-in user, which is what gates edit and delete.
@@ -120,6 +123,7 @@ impl MessageRow {
             reply_count: 0,
             repliers: Vec::new(),
             edited: false,
+            quotes: Rc::new(Vec::new()),
             grouped: false,
             own: false,
             system: false,
@@ -166,6 +170,12 @@ impl MessageRow {
     pub fn replies(mut self, count: u32, repliers: Vec<SharedString>) -> Self {
         self.reply_count = count;
         self.repliers = repliers;
+        self
+    }
+
+    /// Messages and pages quoted inside this one.
+    pub fn quotes(mut self, quotes: Rc<Vec<crate::quote::Quote>>) -> Self {
+        self.quotes = quotes;
         self
     }
 
@@ -371,6 +381,7 @@ impl MessageRow {
                 )
             })
             .children(self.render_files(cx))
+            .children(self.render_quotes(cx))
             .when(!self.reactions.is_empty(), |this| {
                 this.child(self.render_reactions(cx))
             })
@@ -380,6 +391,13 @@ impl MessageRow {
             .into_any_element()
     }
 
+    /// Files under a message.
+    ///
+    /// A picture is the message when someone shares one, so it is shown, not
+    /// announced: the image itself is the control, and its name lives in a
+    /// tooltip rather than a button above it. Anything that cannot be looked
+    /// at — a PDF, a spreadsheet — keeps the labelled button, which for those
+    /// is the whole of what a reader can do with it.
     fn render_files(&self, cx: &App) -> Vec<AnyElement> {
         self.files
             .iter()
@@ -388,68 +406,215 @@ impl MessageRow {
                 let name = SharedString::from(file.display_name().to_string());
                 let permalink = SharedString::from(file.permalink.clone().unwrap_or_default());
                 let open = self.actions.open_file.clone();
+                // A file id is unique on its own; pairing it with the
+                // message keeps the id stable if the same file is shared twice.
+                let id: ElementId = (
+                    SharedString::from(format!("file-{}-{}", self.ts, file.id)),
+                    0,
+                )
+                    .into();
 
-                v_flex()
-                    .w_full()
-                    .items_start()
-                    .gap_1()
-                    .child(
-                        // `items_start` keeps the button at its own width on
-                        // the body's reading edge; a stretched child would
-                        // centre its label across the pane.
-                        Button::new(SharedString::from(format!("file-{}", file.id)))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(SlackIcon::FileText))
-                            .label(name.clone())
-                            .disabled(permalink.is_empty())
-                            .on_click(move |_: &ClickEvent, window, cx| {
-                                open(&permalink, window, cx)
-                            }),
-                    )
-                    // Shown from the local copy: Slack's own thumbnail URLs
-                    // need the token, which the image loader cannot send.
-                    .when_some(attachment.thumbnail.clone(), |this, path| {
-                        let is_video = file.is_video();
-                        this.child(
-                            div()
-                                .relative()
-                                .child(
-                                    img(ImageSource::Resource(Resource::Path(path)))
-                                        .max_w(px(360.))
-                                        .rounded(cx.theme().radius),
-                                )
-                                // A video's thumbnail is a still frame, and a
-                                // still frame that cannot be told from a photo
-                                // is a broken image as far as a reader knows.
-                                .when(is_video, |this| {
-                                    this.child(
+                // Shown from the local copy: Slack's own thumbnail URLs need
+                // the token, which the image loader cannot send.
+                match attachment.thumbnail.clone() {
+                    Some(path) if file.is_image() || file.is_video() => div()
+                        .id(id)
+                        .relative()
+                        .w_full()
+                        .max_w(px(360.))
+                        .cursor_pointer()
+                        .rounded(cx.theme().radius)
+                        .overflow_hidden()
+                        .tooltip({
+                            let name = name.clone();
+                            move |window, cx| Tooltip::new(name.clone()).build(window, cx)
+                        })
+                        .on_click(move |_: &ClickEvent, window, cx| open(&permalink, window, cx))
+                        .child(img(ImageSource::Resource(Resource::Path(path))).w_full())
+                        // A video's thumbnail is a still frame, and a still
+                        // frame that cannot be told from a photo is a broken
+                        // image as far as a reader knows.
+                        .when(file.is_video(), |this| {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
                                         div()
-                                            .absolute()
-                                            .inset_0()
+                                            .size(px(44.))
                                             .flex()
                                             .items_center()
                                             .justify_center()
+                                            .rounded_full()
+                                            .bg(cx.theme().background.opacity(0.75))
                                             .child(
-                                                div()
-                                                    .size(px(44.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .rounded_full()
-                                                    .bg(cx.theme().background.opacity(0.75))
-                                                    .child(
-                                                        Icon::new(IconName::Play)
-                                                            .text_color(cx.theme().foreground),
-                                                    ),
+                                                Icon::new(IconName::Play)
+                                                    .text_color(cx.theme().foreground),
                                             ),
-                                    )
+                                    ),
+                            )
+                        })
+                        .into_any_element(),
+
+                    // No local copy — either it is still downloading or the
+                    // token cannot fetch files. The name is all we have.
+                    _ => div()
+                        .w_full()
+                        .flex()
+                        .items_start()
+                        .child(
+                            Button::new(id)
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(if file.is_image() {
+                                    SlackIcon::Image
+                                } else {
+                                    SlackIcon::FileText
+                                }))
+                                .label(name)
+                                .disabled(permalink.is_empty())
+                                .on_click(move |_: &ClickEvent, window, cx| {
+                                    open(&permalink, window, cx)
                                 }),
                         )
-                    })
+                        .into_any_element(),
+                }
+            })
+            .collect()
+    }
+
+    /// Messages and pages quoted inside this one.
+    ///
+    /// A rule down the left rather than a box: the quote is part of this
+    /// message's body, and boxing it would give it more weight on the page
+    /// than the message carrying it.
+    fn render_quotes(&self, cx: &App) -> Vec<AnyElement> {
+        self.quotes
+            .iter()
+            .enumerate()
+            .map(|(index, quote)| {
+                let key = SharedString::from(format!("quote-{}-{index}", self.ts));
+                let accent = quote.accent.unwrap_or(cx.theme().border);
+
+                h_flex()
+                    .w_full()
+                    .max_w(px(560.))
+                    .items_stretch()
+                    .gap_2()
+                    .py_1()
+                    .child(div().w(px(3.)).flex_shrink_0().rounded_full().bg(accent))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .when_some(self.render_quote_head(quote, cx), |this, head| {
+                                this.child(head)
+                            })
+                            .when_some(quote.title.clone(), |this, title| {
+                                this.child(self.render_quote_title(&key, title, quote, cx))
+                            })
+                            .when(!quote.blocks.is_empty(), |this| {
+                                this.child(
+                                    div().text_sm().child(
+                                        MessageBody::new(
+                                            key.clone(),
+                                            quote.blocks.clone(),
+                                            self.emoji.clone(),
+                                        )
+                                        .on_link(self.actions.follow_link.clone())
+                                        .resolve_name(self.actions.resolve_name.clone())
+                                        .hover_link(self.actions.hover_link.clone()),
+                                    ),
+                                )
+                            })
+                            .when_some(quote.image.clone(), |this, url| {
+                                this.child(img(url).max_w(px(360.)).rounded(cx.theme().radius))
+                            })
+                            .when_some(quote.footer.clone(), |this, footer| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(footer),
+                                )
+                            }),
+                    )
                     .into_any_element()
             })
             .collect()
+    }
+
+    /// Who wrote the quoted message, or which site the link is from.
+    fn render_quote_head(&self, quote: &crate::quote::Quote, cx: &App) -> Option<AnyElement> {
+        let author = quote.author.clone()?;
+
+        let head = h_flex()
+            .items_center()
+            .gap_1p5()
+            .when_some(quote.avatar.clone(), |this, url| {
+                this.child(Avatar::new().src(url).with_size(px(16.)))
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child(author),
+            )
+            .when_some(quote.ts.clone(), |this, ts| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(time::relative(&ts))),
+                )
+            });
+
+        // A quoted message from this workspace behaves like every other name
+        // here: hover for the card, click for the profile.
+        Some(match quote.author_id.clone() {
+            Some(id) if self.actions.store.read(cx).user(&id).is_some() => PersonTrigger::new(
+                SharedString::from(format!("quote-author-{}-{id}", self.ts)),
+                self.actions.store.clone(),
+                id,
+                head.into_any_element(),
+            )
+            .into_any_element(),
+            _ => head.into_any_element(),
+        })
+    }
+
+    /// The quote's heading, which leads back to what was quoted.
+    fn render_quote_title(
+        &self,
+        key: &SharedString,
+        title: SharedString,
+        quote: &crate::quote::Quote,
+        cx: &App,
+    ) -> AnyElement {
+        let Some(link) = quote.link.clone() else {
+            return div()
+                .text_sm()
+                .font_semibold()
+                .child(title)
+                .into_any_element();
+        };
+
+        let open = self.actions.open_file.clone();
+        div()
+            .id(key.clone())
+            .text_sm()
+            .font_semibold()
+            .text_color(cx.theme().link)
+            .cursor_pointer()
+            .hover(|this| this.underline())
+            .on_click(move |_: &ClickEvent, window, cx| open(&link, window, cx))
+            .child(title)
+            .into_any_element()
     }
 
     fn render_reactions(&self, cx: &App) -> AnyElement {
@@ -552,6 +717,7 @@ impl MessageRow {
 
         let ts = self.ts.clone();
         let copy = self.actions.copy_link.clone();
+        let forward = self.actions.forward.clone();
         let edit = self.actions.start_edit.clone();
         let delete = self.actions.delete.clone();
         let open_thread = self.actions.open_thread.clone();
@@ -590,7 +756,18 @@ impl MessageRow {
                         let copy = copy.clone();
                         let edit = edit.clone();
                         let delete = delete.clone();
+                        let forward = forward.clone();
                         let ts = ts.clone();
+
+                        let menu = menu.item(
+                            PopupMenuItem::new("Forward message…")
+                                .icon(Icon::new(SlackIcon::Forward))
+                                .on_click({
+                                    let ts = ts.clone();
+                                    let forward = forward.clone();
+                                    move |_, window, cx| forward(&ts, window, cx)
+                                }),
+                        );
 
                         let menu = menu.item(
                             PopupMenuItem::new("Copy link")

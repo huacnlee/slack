@@ -293,6 +293,7 @@ impl ChannelView {
                 .map(|u| store.user_name(u))
                 .collect(),
         )
+        .quotes(entry.map(|e| e.quotes.clone()).unwrap_or_default())
         .edited(message.edited.is_some())
         .grouped(grouped)
         .own(store.is_me(&author_id))

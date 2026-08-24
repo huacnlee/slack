@@ -42,6 +42,10 @@ pub enum SlackIcon {
     Refresh,
     Download,
     FileText,
+    /// A picture, when there is no picture to show yet.
+    Image,
+    /// Send a message on to another conversation.
+    Forward,
     /// Leads a threaded reply.
     CornerDownRight,
 }
@@ -69,6 +73,8 @@ impl IconNamed for SlackIcon {
             SlackIcon::Refresh => "refresh-cw",
             SlackIcon::Download => "download",
             SlackIcon::FileText => "file-text",
+            SlackIcon::Image => "image",
+            SlackIcon::Forward => "forward",
             SlackIcon::CornerDownRight => "corner-down-right",
         };
         format!("icons/{name}.svg").into()

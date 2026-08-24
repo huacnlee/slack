@@ -87,6 +87,17 @@ impl SlackClient {
         &self.inner.token
     }
 
+    /// Run a long-lived task on the transport runtime.
+    ///
+    /// Requests bridge back over a oneshot and so need no handle; a socket
+    /// outlives any single call and does, which is what this is for.
+    pub(crate) fn spawn_on_transport<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.inner.runtime.spawn(future);
+    }
+
     pub fn request_count(&self) -> u64 {
         self.inner.requests.load(Ordering::Relaxed)
     }

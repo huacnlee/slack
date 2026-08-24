@@ -264,9 +264,64 @@ pub struct Attachment {
     #[serde(default)]
     pub service_name: Option<String>,
     #[serde(default)]
+    pub service_icon: Option<String>,
+    #[serde(default)]
     pub image_url: Option<String>,
     #[serde(default)]
+    pub thumb_url: Option<String>,
+    #[serde(default)]
     pub color: Option<String>,
+
+    // A forwarded message arrives as an attachment on an otherwise empty
+    // message: everything the reader is meant to see is below.
+    /// Set when this attachment *is* another message — a forward, or a Slack
+    /// permalink the reader pasted.
+    #[serde(default)]
+    pub is_share: bool,
+    #[serde(default)]
+    pub is_msg_unfurl: bool,
+    #[serde(default)]
+    pub author_name: Option<String>,
+    #[serde(default)]
+    pub author_subname: Option<String>,
+    #[serde(default)]
+    pub author_icon: Option<String>,
+    #[serde(default)]
+    pub author_link: Option<String>,
+    #[serde(default)]
+    pub author_id: Option<String>,
+    #[serde(default)]
+    pub channel_name: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    /// When the quoted message was posted.
+    ///
+    /// Slack sends this as a string for a shared message and as a number for
+    /// some link unfurls, so it is read leniently rather than being the one
+    /// field that makes a whole message fail to parse.
+    #[serde(default, deserialize_with = "lenient_ts")]
+    pub ts: Option<Ts>,
+    /// A permalink back to the quoted message.
+    #[serde(default)]
+    pub from_url: Option<String>,
+    #[serde(default)]
+    pub footer: Option<String>,
+    #[serde(default)]
+    pub files: Vec<File>,
+}
+
+/// Read a timestamp that Slack may have sent as either a string or a number.
+fn lenient_ts<'de, D>(deserializer: D) -> std::result::Result<Option<Ts>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => Some(Ts(s)),
+            Some(serde_json::Value::Number(n)) => Some(Ts(n.to_string())),
+            _ => None,
+        },
+    )
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

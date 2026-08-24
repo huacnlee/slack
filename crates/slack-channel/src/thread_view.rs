@@ -213,6 +213,19 @@ impl ThreadView {
 
     fn message_actions(&self, cx: &Context<Self>) -> MessageActions {
         MessageActions {
+            forward: {
+                let store = self.store.clone();
+                let channel = self.channel.clone();
+                Rc::new(move |ts: &Ts, window: &mut Window, cx: &mut App| {
+                    crate::forward::ForwardView::open(
+                        store.clone(),
+                        channel.clone(),
+                        ts.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            },
             toggle_reaction: Rc::new(cx.listener(
                 |this, (ts, name): &(Ts, SharedString), _, cx| {
                     this.toggle_reaction(ts.clone(), name.clone(), cx)

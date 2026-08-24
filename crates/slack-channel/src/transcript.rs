@@ -27,12 +27,22 @@ pub const MAX_LOADED: usize = 400;
 pub struct Entry {
     pub message: Message,
     pub blocks: Rc<Vec<Block>>,
+    /// Messages and pages quoted inside this one.
+    pub quotes: Rc<Vec<crate::quote::Quote>>,
 }
 
 impl Entry {
     pub fn new(message: Message) -> Self {
         let blocks = Rc::new(markup::parse(&message.text));
-        Self { message, blocks }
+        // Parsed once here rather than per frame: a forwarded message carries
+        // its whole body in an attachment, and the transcript re-renders a row
+        // every time anything about it changes.
+        let quotes = Rc::new(crate::quote::Quote::all(&message.attachments));
+        Self {
+            message,
+            blocks,
+            quotes,
+        }
     }
 
     pub fn ts(&self) -> &Ts {
@@ -111,6 +121,19 @@ impl Transcript {
 
     pub fn remove(&mut self, ts: &Ts) {
         self.entries.retain(|e| e.ts() != ts);
+    }
+
+    /// Replace one message's text in place, keeping its position and its
+    /// reactions.
+    ///
+    /// An edit changes nothing about where a message sits in the transcript,
+    /// so re-reading the page around it would only cost a fetch and a scroll
+    /// jump to arrive back at the same order.
+    pub fn set_text(&mut self, ts: &Ts, text: String, edited: Option<slack_api::models::Edited>) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.ts() == ts) {
+            entry.message.text = text;
+            entry.message.edited = edited;
+        }
     }
 
     /// Update the reaction list of one message in place.

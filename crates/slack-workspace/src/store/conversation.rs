@@ -116,6 +116,43 @@ pub enum LoadState {
     Failed(SharedString),
 }
 
+/// Conversations whose name matches `query`, best first.
+///
+/// Prefix matches rank above substring ones and nothing else is reordered, so
+/// a caller that listed alphabetically still reads alphabetically underneath.
+/// One matcher for every surface that asks "which conversation?" — the quick
+/// switcher and forwarding must not disagree about what a query means.
+pub fn matching<'a>(
+    conversations: impl Iterator<Item = &'a Conversation>,
+    query: &str,
+    limit: usize,
+) -> Vec<Conversation> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return conversations.take(limit).cloned().collect();
+    }
+
+    let mut ranked: Vec<(u8, &Conversation)> = conversations
+        .filter_map(|conversation| {
+            let name = conversation.name.to_lowercase();
+            if name.starts_with(&query) {
+                Some((0, conversation))
+            } else if name.contains(&query) {
+                Some((1, conversation))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, conversation)| conversation.clone())
+        .collect()
+}
+
 #[cfg(test)]
 pub(in crate::store) mod tests {
     use super::*;
@@ -140,6 +177,35 @@ pub(in crate::store) mod tests {
             probed_at: 0,
             starred: false,
         }
+    }
+
+    #[test]
+    fn a_prefix_match_outranks_a_substring_one() {
+        let general = a_conversation("C1", "general", 0, "0");
+        let engineering = a_conversation("C2", "engineering", 0, "0");
+
+        // "general" contains "en"; "engineering" starts with it. Listed the
+        // other way round on purpose, so passing means the rank did the work.
+        let found = matching([&general, &engineering].into_iter(), "en", 10);
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "engineering", "a prefix match should lead");
+        assert_eq!(found[1].name, "general");
+    }
+
+    #[test]
+    fn an_empty_query_keeps_the_order_it_was_given() {
+        let a = a_conversation("C1", "zebra", 0, "0");
+        let b = a_conversation("C2", "apple", 0, "0");
+
+        let found = matching([&a, &b].into_iter(), "  ", 10);
+        assert_eq!(found[0].name, "zebra");
+    }
+
+    #[test]
+    fn a_query_that_matches_nothing_finds_nothing() {
+        let a = a_conversation("C1", "general", 0, "0");
+        assert!(matching([&a].into_iter(), "nope", 10).is_empty());
     }
 
     #[test]
