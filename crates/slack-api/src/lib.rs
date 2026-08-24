@@ -18,6 +18,7 @@
 
 mod client;
 mod error;
+mod limiter;
 mod methods;
 
 pub mod cache;

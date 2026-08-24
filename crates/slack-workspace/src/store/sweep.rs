@@ -34,9 +34,19 @@ impl WorkspaceStore {
     pub(super) fn spawn_sweep(&self, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(SWEEP_INTERVAL).await;
+                // Re-read every cycle: the socket may come up, or Slack may
+                // refuse us, and either changes what this loop should cost.
+                let interval = match this.update(cx, |this, _| this.sweep_interval()) {
+                    Ok(Some(interval)) => interval,
+                    // The socket is live and reporting what this would ask.
+                    Ok(None) => SWEEP_INTERVAL,
+                    Err(_) => return,
+                };
+                cx.background_executor().timer(interval).await;
 
                 let batched = this.update(cx, |this, _| {
+                    // The socket may have come up during the wait.
+                    this.sweep_interval()?;
                     let batch = this.sweep_batch(now_seconds());
                     if batch.is_empty() {
                         None
@@ -156,6 +166,23 @@ impl WorkspaceStore {
     }
 }
 
+/// How long the sweep should wait, or nothing at all if it should not run.
+///
+/// Probing for arrivals the socket already reports spends a request to learn
+/// something known, and reading history is the scarcest thing this client
+/// does. A refusal buys the open conversation room rather than merely delaying
+/// the scan that caused it.
+pub(super) fn interval(realtime: &RealtimeState, throttled: bool) -> Option<Duration> {
+    if realtime.is_live() {
+        return None;
+    }
+    Some(if throttled {
+        SWEEP_THROTTLED
+    } else {
+        SWEEP_INTERVAL
+    })
+}
+
 /// What one probe learned about a conversation.
 #[derive(Debug, Default)]
 pub(super) struct Probe {
@@ -213,6 +240,25 @@ pub(in crate::store) mod tests {
     use super::*;
 
     use super::super::conversation::tests::a_conversation;
+
+    #[test]
+    fn the_sweep_stands_down_while_the_socket_is_live() {
+        assert_eq!(interval(&RealtimeState::Live, false), None);
+        assert_eq!(
+            interval(&RealtimeState::Polling("missing_scope".into()), false),
+            Some(SWEEP_INTERVAL)
+        );
+        assert_eq!(
+            interval(&RealtimeState::Polling("missing_scope".into()), true),
+            Some(SWEEP_THROTTLED),
+            "a refusal should buy the open conversation room, not just delay this one"
+        );
+        assert_eq!(
+            interval(&RealtimeState::Reconnecting, false),
+            Some(SWEEP_INTERVAL),
+            "a dropped socket replays nothing, so the sweep is the floor again"
+        );
+    }
 
     #[test]
     fn a_message_newer_than_the_read_marker_counts_as_unread() {

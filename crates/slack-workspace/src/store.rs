@@ -52,12 +52,18 @@ const ACTIVE_POLL: Duration = Duration::from_secs(6);
 const ACTIVE_POLL_THROTTLED: Duration = Duration::from_secs(65);
 
 /// How often the background sweep learns more about the conversation list.
-const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+const SWEEP_INTERVAL: Duration = Duration::from_secs(20);
 /// Conversations probed per sweep cycle. Each costs one or two API calls, so
 /// this is the knob that keeps a large workspace inside Slack's rate limit
 /// while still converging in a few minutes.
-const SWEEP_BATCH: usize = 8;
+const SWEEP_BATCH: usize = 1;
 /// How long a probe stays trusted before the sweep refreshes it.
+/// How long the sweep waits once Slack has refused a history request.
+///
+/// At this point the quota is the scarce thing, and the conversation on screen
+/// has first claim on it.
+const SWEEP_THROTTLED: Duration = Duration::from_secs(120);
+
 const PROBE_TTL_SECONDS: i64 = 15 * 60;
 
 /// The directory is fetched once; past this many members, mention completion
@@ -111,6 +117,8 @@ pub struct WorkspaceStore {
     /// How often to look for new messages, widened once Slack rate-limits us.
     activity_interval: Duration,
     realtime: RealtimeState,
+    /// Whether Slack has refused a history request this session.
+    throttled: bool,
     /// Who is typing where. Entries expire rather than being cleared, since
     /// Slack never says anyone stopped.
     typing: HashMap<SharedString, Vec<Typist>>,
@@ -138,6 +146,7 @@ impl WorkspaceStore {
             connectivity: Connectivity::Online,
             activity_interval: ACTIVE_POLL,
             realtime: RealtimeState::Connecting,
+            throttled: false,
             typing: HashMap::new(),
             _polling: Vec::new(),
         };
@@ -396,13 +405,29 @@ impl WorkspaceStore {
     /// This is one-way on purpose: a workspace that hit the limit once will
     /// hit it again, and flapping between intervals would just burn the quota
     /// that is left.
+    /// Slack refused a history request.
+    ///
+    /// The client paces itself per method, so this is not about avoiding the
+    /// next 429 — it is about who gets the requests that remain. Backing the
+    /// sweep off as well as the poll means the conversation someone is reading
+    /// is not queued behind a background scan of one they are not.
     pub fn note_rate_limit(&mut self, cx: &mut Context<Self>) {
-        if self.activity_interval == ACTIVE_POLL_THROTTLED {
+        if self.throttled {
             return;
         }
-        log::info!("Slack rate-limited history; polling once a minute from now on");
+        log::info!("Slack rate-limited history; polling once a minute and sweeping rarely");
+        self.throttled = true;
         self.activity_interval = ACTIVE_POLL_THROTTLED;
         cx.notify();
+    }
+
+    /// How long the sweep should wait before its next probe.
+    ///
+    /// Nothing at all while the socket is live: arrivals and read markers
+    /// come through as events, so probing for them spends a request to learn
+    /// something already known.
+    pub(crate) fn sweep_interval(&self) -> Option<Duration> {
+        sweep::interval(&self.realtime, self.throttled)
     }
 
     /// Apply a locally known new message so the sidebar reorders immediately,

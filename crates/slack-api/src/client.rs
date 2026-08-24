@@ -44,6 +44,8 @@ pub struct SlackClient {
 
 struct Inner {
     http: reqwest::Client,
+    /// Keeps every call site from flooding one method, whatever it asks for.
+    limiter: crate::limiter::Limiter,
     runtime: tokio::runtime::Runtime,
     token: String,
     /// Requests issued since construction — surfaced for diagnostics only.
@@ -76,6 +78,7 @@ impl SlackClient {
         Ok(Self {
             inner: Arc::new(Inner {
                 http,
+                limiter: Default::default(),
                 runtime,
                 token,
                 requests: AtomicU64::new(0),
@@ -230,11 +233,12 @@ impl SlackClient {
         let (tx, rx) = oneshot::channel();
         let inner = self.inner.clone();
         let url = format!("{API_BASE}/{method}");
+        let method = method.to_string();
 
         inner.requests.fetch_add(1, Ordering::Relaxed);
         let runtime = self.inner.runtime.handle().clone();
         runtime.spawn(async move {
-            let result = execute(&inner, &url, body).await;
+            let result = execute(&inner, &method, &url, body).await;
             // A dropped receiver just means the caller lost interest.
             let _ = tx.send(result);
         });
@@ -245,10 +249,17 @@ impl SlackClient {
 }
 
 /// Send the request, honouring `Retry-After` and unwrapping Slack's envelope.
-async fn execute(inner: &Inner, url: &str, body: Body) -> Result<Value> {
+async fn execute(inner: &Inner, method: &str, url: &str, body: Body) -> Result<Value> {
     let mut attempt = 0;
 
     loop {
+        // Wait for this method's turn before spending a request on it. Being
+        // refused costs the whole window, so it is cheaper to be early.
+        let wait = inner.limiter.reserve(method);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+
         let request = match &body {
             Body::Query(params) => inner.http.get(url).query(params),
             Body::Json(value) => inner.http.post(url).json(value),
@@ -277,14 +288,20 @@ async fn execute(inner: &Inner, url: &str, body: Body) -> Result<Value> {
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(30);
 
+            // Slack has now told us how wide the window really is. Recording
+            // it here is what stops the next hundred requests repeating this.
+            inner
+                .limiter
+                .refused(method, Duration::from_secs(delay.min(60)));
+
             attempt += 1;
             if attempt > MAX_RETRIES {
                 return Err(Error::RateLimited(delay));
             }
             // Worth reporting: a caller that sees a slow request wants to know
             // it is waiting on Slack's limiter, not on the network.
-            log::warn!("{url} rate limited, waiting {delay}s (attempt {attempt})");
-            tokio::time::sleep(Duration::from_secs(delay.min(60))).await;
+            log::warn!("{method} rate limited, pacing at {delay}s (attempt {attempt})");
+            // The reservation above already waits out the window.
             continue;
         }
 
