@@ -1,0 +1,34 @@
+display_information:
+  name: Slack Desktop
+  description: A native Slack client built with GPUI.
+  background_color: "#4a154b"
+oauth_config:
+  scopes:
+    user:
+      - channels:read
+      - groups:read
+      - im:read
+      - mpim:read
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - chat:write
+      - channels:write
+      - groups:write
+      - im:write
+      - mpim:write
+      - users:read
+      - users:write
+      - reactions:read
+      - reactions:write
+      - emoji:read
+      - dnd:read
+      - dnd:write
+      - files:write
+      - search:read
+      - stars:read
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

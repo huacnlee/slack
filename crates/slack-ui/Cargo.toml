@@ -1,0 +1,24 @@
+[package]
+name = "slack-ui"
+description = "Views and application state for the Slack desktop client."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+slack-api.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

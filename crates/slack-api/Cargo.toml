@@ -1,0 +1,24 @@
+[package]
+name = "slack-api"
+description = "Slack Web API client used by the desktop client."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+emojis = "0.7"
+futures.workspace = true
+keyring.workspace = true
+log.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
