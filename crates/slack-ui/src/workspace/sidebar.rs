@@ -17,9 +17,8 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::list::ListItem;
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::sidebar::{SidebarFooter, SidebarHeader};
-use gpui_component::tab::{Tab, TabBar};
+use gpui_component::menu::PopupMenuItem;
+use gpui_component::sidebar::SidebarHeader;
 use gpui_component::tree::{Tree, TreeItem, TreeState, tree};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable as _, StyledExt as _,
@@ -29,50 +28,23 @@ use gpui_component::{
 
 use slack_api::models::{ChannelKind, Presence, Ts};
 
-use crate::activity::activity_view::{ActivityEvent, ActivityView};
 use crate::icons::SlackIcon;
 use crate::time;
-use crate::workspace::store::{
-    Connectivity, Conversation, Section, WorkspaceEvent, WorkspaceStore,
-};
-
-/// Snooze durations offered in the notifications menu, in minutes.
-const SNOOZE_CHOICES: &[(u32, &str)] = &[
-    (30, "For 30 minutes"),
-    (60, "For 1 hour"),
-    (120, "For 2 hours"),
-    (480, "Until tomorrow"),
-];
+use crate::workspace::store::{Connectivity, Conversation, Section, WorkspaceStore};
 
 #[derive(Debug, Clone)]
 pub enum SidebarEvent {
     /// The reader asked to sign out of this workspace.
     SignOutRequested,
-    /// Open a conversation chosen from the activity list.
-    Open(SharedString),
-}
-
-/// What the navigation column is showing.
-///
-/// Activity lives here rather than in a pane of its own: it *is* navigation —
-/// every row leads somewhere — and a fourth column would crowd the transcript
-/// that the window is actually for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pane {
-    Conversations,
-    Activity,
 }
 
 pub struct SidebarView {
     store: Entity<WorkspaceStore>,
     filter: Entity<InputState>,
     tree: Entity<TreeState>,
-    activity: Entity<ActivityView>,
-    pane: Pane,
     /// What the tree currently shows, so a rebuild that would change nothing
     /// can be skipped.
     signature: Vec<(SharedString, SharedString)>,
-    collapsed: bool,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -83,13 +55,8 @@ impl SidebarView {
     pub fn new(store: Entity<WorkspaceStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter conversations"));
         let tree = cx.new(|cx| TreeState::new(cx));
-        let activity = cx.new(|cx| ActivityView::new(store.clone(), cx));
 
         let subscriptions = vec![
-            cx.subscribe(&activity, |_, _, event: &ActivityEvent, cx| {
-                let ActivityEvent::Open(id) = event;
-                cx.emit(SidebarEvent::Open(id.clone()));
-            }),
             cx.observe(&store, |this, _, cx| {
                 this.rebuild(cx);
                 this.sync_selection(cx);
@@ -105,20 +72,12 @@ impl SidebarView {
             store,
             filter,
             tree,
-            activity,
-            pane: Pane::Conversations,
             signature: Vec::new(),
-            collapsed: false,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         this.rebuild(cx);
         this
-    }
-
-    pub fn toggle_collapsed(&mut self, cx: &mut Context<Self>) {
-        self.collapsed = !self.collapsed;
-        cx.notify();
     }
 
     pub fn focus_filter(&self, window: &mut Window, cx: &mut App) {
@@ -364,20 +323,18 @@ impl SidebarView {
                             .to_string(),
                     )),
             )
-            .when(!self.collapsed, |this| {
-                this.child(
-                    v_flex()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(div().font_semibold().truncate().child(team))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(self.status_line(cx)),
-                        ),
-                )
-            })
+            .child(
+                v_flex()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(div().font_semibold().truncate().child(team))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(self.status_line(cx)),
+                    ),
+            )
     }
 
     fn status_line(&self, cx: &App) -> SharedString {
@@ -397,94 +354,6 @@ impl SidebarView {
             Presence::Away => "Away".into(),
         }
     }
-
-    fn render_footer(&self, cx: &mut Context<Self>) -> SidebarFooter {
-        let store = self.store.read(cx);
-        let name = SharedString::from(store.identity().user.clone());
-        let away = store.presence() == Presence::Away;
-        let snoozing = store.dnd().snooze_enabled;
-        let collapsed = self.collapsed;
-        let store = self.store.clone();
-
-        SidebarFooter::new().child(
-            Button::new("account")
-                .ghost()
-                .w_full()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .items_center()
-                        .child(Icon::new(IconName::CircleUser))
-                        .when(!collapsed, |this| {
-                            this.child(div().flex_1().min_w_0().truncate().child(name))
-                        }),
-                )
-                .dropdown_menu(move |menu, _, _| {
-                    let store = store.clone();
-
-                    let menu = menu
-                        .item(
-                            PopupMenuItem::new(if away {
-                                "Set yourself as active"
-                            } else {
-                                "Set yourself as away"
-                            })
-                            .on_click({
-                                let store = store.clone();
-                                move |_, _, cx| {
-                                    let next = if away {
-                                        Presence::Active
-                                    } else {
-                                        Presence::Away
-                                    };
-                                    store.update(cx, |store, cx| store.set_presence(next, cx));
-                                }
-                            }),
-                        )
-                        .separator();
-
-                    let menu = if snoozing {
-                        menu.item(PopupMenuItem::new("Resume notifications").on_click({
-                            let store = store.clone();
-                            move |_, _, cx| {
-                                store.update(cx, |store, cx| store.snooze(None, cx));
-                            }
-                        }))
-                    } else {
-                        SNOOZE_CHOICES.iter().fold(
-                            menu.item(PopupMenuItem::label("Pause notifications")),
-                            |menu, (minutes, label)| {
-                                let store = store.clone();
-                                let minutes = *minutes;
-                                menu.item(PopupMenuItem::new(*label).on_click(move |_, _, cx| {
-                                    store.update(cx, |store, cx| store.snooze(Some(minutes), cx));
-                                }))
-                            },
-                        )
-                    };
-
-                    menu.separator()
-                        .item(
-                            PopupMenuItem::new("Switch theme")
-                                .icon(Icon::new(IconName::Moon))
-                                .on_click(|_, window, cx| crate::theme::toggle(window, cx)),
-                        )
-                        .separator()
-                        .item(
-                            PopupMenuItem::new("Sign out")
-                                .icon(Icon::new(SlackIcon::SignOut))
-                                .on_click({
-                                    let store = store.clone();
-                                    move |_, _, cx| {
-                                        store
-                                            .update(cx, |_, cx| cx.emit(WorkspaceEvent::SignedOut));
-                                    }
-                                }),
-                        )
-                }),
-        )
-    }
 }
 
 impl Focusable for SidebarView {
@@ -501,7 +370,6 @@ impl Render for SidebarView {
         // container: that container's contract is groups of menu items, and
         // the tree replaced that model to get collapsible sections and
         // virtualized rows.
-        // Width belongs to the shell, which makes this pane resizable.
         v_flex()
             .size_full()
             .min_w_0()
@@ -513,62 +381,28 @@ impl Render for SidebarView {
                     .gap_2()
                     .p_2()
                     .child(self.render_header(cx))
-                    .when(!self.collapsed, |this| {
-                        this.child(
-                            TabBar::new("sidebar-panes")
-                                .segmented()
-                                .selected_index(match self.pane {
-                                    Pane::Conversations => 0,
-                                    Pane::Activity => 1,
-                                })
-                                .child(Tab::new().label("Chats"))
-                                .child(Tab::new().label("Activity"))
-                                .on_click(cx.listener(|this, index: &usize, _, cx| {
-                                    this.pane = match index {
-                                        1 => Pane::Activity,
-                                        _ => Pane::Conversations,
-                                    };
-                                    cx.notify();
-                                })),
-                        )
-                        .when(self.pane == Pane::Conversations, |this| {
-                            this.child(
-                                Input::new(&self.filter)
-                                    .small()
-                                    .cleanable(true)
-                                    .prefix(Icon::new(IconName::Search).small()),
-                            )
-                        })
-                    }),
+                    .child(
+                        Input::new(&self.filter)
+                            .small()
+                            .cleanable(true)
+                            .prefix(Icon::new(IconName::Search).small()),
+                    ),
             )
-            .when(self.pane == Pane::Activity, |this| {
-                this.child(div().flex_1().min_h_0().child(self.activity.clone()))
-            })
-            .when(self.pane == Pane::Conversations, |this| {
-                this.child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .px_1()
-                        .when(empty, |this| {
-                            this.child(
-                                div()
-                                    .p_2()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("No conversations"),
-                            )
-                        })
-                        .when(!empty, |this| this.child(self.render_tree(cx))),
-                )
-            })
             .child(
                 div()
-                    .w_full()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .child(self.render_footer(cx)),
+                    .flex_1()
+                    .min_h_0()
+                    .px_1()
+                    .when(empty, |this| {
+                        this.child(
+                            div()
+                                .p_2()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No conversations"),
+                        )
+                    })
+                    .when(!empty, |this| this.child(self.render_tree(cx))),
             )
     }
 }

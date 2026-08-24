@@ -55,6 +55,17 @@ pub fn relative(ts: &Ts) -> String {
     }
 }
 
+/// The unambiguous form, for a tooltip over a short one.
+///
+/// A transcript shows `14:32`, which is only readable next to a day heading
+/// that may be far up the pane; this is what the reader checks against.
+pub fn full(ts: &Ts) -> String {
+    match local(ts) {
+        Some(dt) => dt.format("%A, %-d %B %Y at %H:%M:%S").to_string(),
+        None => String::new(),
+    }
+}
+
 /// `until 15:00` for a snooze that is already running.
 pub fn until_clock(epoch_seconds: i64) -> String {
     match Local.timestamp_opt(epoch_seconds, 0).single() {
@@ -108,6 +119,17 @@ mod tests {
     fn an_unset_timestamp_renders_as_nothing_rather_than_1970() {
         assert_eq!(clock(&Ts::default()), "");
         assert_eq!(day_heading(&Ts("0.000000".into())), "");
+        assert_eq!(full(&Ts::default()), "");
+    }
+
+    #[test]
+    fn the_full_form_names_the_day_the_date_and_the_second() {
+        let ts = ts_at(Local::now());
+        let full = full(&ts);
+        assert!(full.contains(&Local::now().format("%Y").to_string()));
+        assert!(full.contains(" at "));
+        // Two colons: hours:minutes:seconds.
+        assert_eq!(full.matches(':').count(), 2);
     }
 
     #[test]

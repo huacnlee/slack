@@ -32,6 +32,10 @@ pub struct QuickSwitcher {
     state: Entity<CommandState>,
     /// Current results, in the order they are rendered.
     matches: Vec<Conversation>,
+    /// Recently visited conversations, most recent first. With no query typed
+    /// these *are* the results — an empty palette that listed the workspace
+    /// alphabetically would answer a question nobody asked.
+    recent: Vec<SharedString>,
 }
 
 impl EventEmitter<QuickSwitcherEvent> for QuickSwitcher {}
@@ -43,6 +47,7 @@ impl QuickSwitcher {
             store,
             state,
             matches: Vec::new(),
+            recent: Vec::new(),
         };
         this.search("", cx);
         this
@@ -52,6 +57,12 @@ impl QuickSwitcher {
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         let handle = self.state.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
+    }
+
+    /// Tell the palette where the reader has been.
+    pub fn set_recent(&mut self, recent: Vec<SharedString>, cx: &mut Context<Self>) {
+        self.recent = recent;
+        self.search("", cx);
     }
 
     pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -64,15 +75,22 @@ impl QuickSwitcher {
         let query = query.trim().to_lowercase();
         let store = self.store.read(cx);
 
+        if query.is_empty() {
+            // No query: this is the recents list.
+            self.matches = self
+                .recent
+                .iter()
+                .filter_map(|id| store.conversation(id).cloned())
+                .take(MAX_RESULTS)
+                .collect();
+            cx.notify();
+            return;
+        }
+
         let mut ranked: Vec<(u8, &Conversation)> = store
-            .conversations()
-            .iter()
+            .listable()
             .filter_map(|conversation| {
                 let name = conversation.name.to_lowercase();
-                if query.is_empty() {
-                    // With no query, the switcher is a recents list.
-                    return Some((1, conversation));
-                }
                 if name.starts_with(&query) {
                     Some((0, conversation))
                 } else if name.contains(&query) {
@@ -83,8 +101,8 @@ impl QuickSwitcher {
             })
             .collect();
 
-        // The store already sorts by unread and recency; this only promotes
-        // prefix matches above substring ones without disturbing that.
+        // The store lists alphabetically; this only promotes prefix matches
+        // above substring ones without disturbing that.
         ranked.sort_by_key(|(rank, _)| *rank);
         self.matches = ranked
             .into_iter()
@@ -134,10 +152,10 @@ impl Render for QuickSwitcher {
         Command::new(&self.state)
             .bordered(false)
             .filterable(false)
-            .placeholder("Jump to a conversation")
             .min_h(gpui::px(320.))
             .max_h(gpui::px(320.))
             .items(items)
+            .placeholder("Jump to a conversation")
             .empty(|_, _, cx| {
                 v_flex()
                     .w_full()

@@ -8,8 +8,12 @@ use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 actions!(
     slack,
     [
-        /// Jump to a conversation by name.
+        /// Jump to a conversation by name, or pick from recent ones.
         OpenQuickSwitcher,
+        /// Return to the conversation visited before this one.
+        GoBack,
+        /// Undo a `GoBack`.
+        GoForward,
         /// Search messages across the workspace.
         OpenSearch,
         /// Close the thread pane and return to the transcript.
@@ -34,6 +38,9 @@ pub fn init(cx: &mut App) {
     // would create two owners for one keystroke.
     cx.bind_keys([
         KeyBinding::new("secondary-k", OpenQuickSwitcher, Some(WORKSPACE_CONTEXT)),
+        // The platform's own history keys, so they need no explaining.
+        KeyBinding::new("secondary-[", GoBack, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new("secondary-]", GoForward, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("secondary-f", OpenSearch, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("secondary-r", Reload, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("secondary-shift-t", ToggleTheme, Some(WORKSPACE_CONTEXT)),
@@ -54,6 +61,9 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Quit Slack", Quit),
         ]),
         Menu::new("Go").items(vec![
+            MenuItem::action("Back", GoBack),
+            MenuItem::action("Forward", GoForward),
+            MenuItem::separator(),
             MenuItem::action("Jump to conversation…", OpenQuickSwitcher),
             MenuItem::action("Search messages…", OpenSearch),
             MenuItem::separator(),

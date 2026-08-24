@@ -1,5 +1,9 @@
 //! Icons this product needs that the shared set does not ship.
 //!
+//! All Lucide, the same family `gpui-component-assets` uses, so the two sets
+//! cannot drift into looking like two products. The files are taken unmodified
+//! from `lucide-static`; see `crates/slack-app/assets/ICONS.md`.
+//!
 //! `IconNamed` is the documented seam for exactly this: the enum drops into
 //! anywhere `IconName` is accepted, and the paths resolve against the
 //! application's own asset source.
@@ -20,6 +24,8 @@ pub enum SlackIcon {
     AtSign,
     /// A message thread.
     Thread,
+    /// Conversations, for the navigation rail.
+    Chats,
     /// Add a reaction.
     SmilePlus,
     /// Attach a file.
@@ -45,16 +51,17 @@ impl IconNamed for SlackIcon {
             SlackIcon::Lock => "lock",
             SlackIcon::Users => "users",
             SlackIcon::AtSign => "at-sign",
-            SlackIcon::Thread => "thread",
+            SlackIcon::Thread => "message-square-reply",
+            SlackIcon::Chats => "message-circle",
             SlackIcon::SmilePlus => "smile-plus",
             SlackIcon::Paperclip => "paperclip",
             SlackIcon::Send => "send",
             SlackIcon::SignOut => "log-out",
             SlackIcon::BellOff => "bell-off",
             SlackIcon::Pencil => "pencil",
-            SlackIcon::Trash => "trash",
+            SlackIcon::Trash => "trash-2",
             SlackIcon::Link => "link",
-            SlackIcon::Refresh => "refresh",
+            SlackIcon::Refresh => "refresh-cw",
             SlackIcon::Download => "download",
             SlackIcon::FileText => "file-text",
             SlackIcon::CornerDownRight => "corner-down-right",

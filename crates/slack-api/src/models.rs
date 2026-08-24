@@ -293,12 +293,29 @@ impl User {
             .unwrap_or(&self.id)
     }
 
+    /// The avatar to draw, or `None` when there is nothing renderable.
+    ///
+    /// WebP is skipped: GPUI's image decoder does not handle it, and a handful
+    /// of Slack profiles use it. Passing one through produces a broken image
+    /// and a decode error per frame, where an initial reads fine.
     pub fn avatar_url(&self) -> Option<&str> {
-        self.profile
-            .image_72
-            .as_deref()
-            .or(self.profile.image_48.as_deref())
+        [
+            self.profile.image_72.as_deref(),
+            self.profile.image_48.as_deref(),
+            self.profile.image_192.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|url| !url.is_empty() && !is_webp(url))
     }
+}
+
+/// GPUI cannot decode WebP; a URL ending in it is not worth requesting.
+fn is_webp(url: &str) -> bool {
+    url.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("webp"))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -369,4 +386,51 @@ pub struct MessagePage {
     pub messages: Vec<Message>,
     pub has_more: bool,
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_avatars(image_72: &str, image_48: &str) -> User {
+        User {
+            id: "U1".into(),
+            profile: Profile {
+                image_72: Some(image_72.to_string()),
+                image_48: Some(image_48.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_largest_available_avatar_is_used() {
+        let user = with_avatars("https://x/a_72.png", "https://x/a_48.png");
+        assert_eq!(user.avatar_url(), Some("https://x/a_72.png"));
+    }
+
+    #[test]
+    fn a_webp_avatar_falls_through_to_a_format_that_renders() {
+        let user = with_avatars("https://x/a_72.webp", "https://x/a_48.png");
+        assert_eq!(user.avatar_url(), Some("https://x/a_48.png"));
+    }
+
+    #[test]
+    fn a_profile_with_only_webp_has_no_avatar() {
+        let user = with_avatars("https://x/a_72.webp", "https://x/a_48.WEBP");
+        assert_eq!(user.avatar_url(), None);
+    }
+
+    #[test]
+    fn an_empty_avatar_field_is_not_a_url() {
+        let user = with_avatars("", "https://x/a_48.png");
+        assert_eq!(user.avatar_url(), Some("https://x/a_48.png"));
+    }
+
+    #[test]
+    fn a_url_with_no_extension_is_kept() {
+        let user = with_avatars("https://x/avatar", "");
+        assert_eq!(user.avatar_url(), Some("https://x/avatar"));
+    }
 }

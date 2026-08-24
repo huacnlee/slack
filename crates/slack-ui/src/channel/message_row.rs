@@ -10,10 +10,12 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement,
-    RenderOnce, SharedString, SharedUri, Styled, Window, div, img, px,
+    RenderOnce, SharedString, SharedUri, StatefulInteractiveElement as _, Styled, Window, div, img,
+    px,
 };
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::popover::Popover;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
     avatar::Avatar,
@@ -181,6 +183,11 @@ impl MessageRow {
         self
     }
 
+    /// The unambiguous timestamp, for a tooltip over the short one.
+    fn timestamp_tooltip(&self) -> SharedString {
+        SharedString::from(time::full(&self.ts))
+    }
+
     fn element_id(&self, part: &'static str) -> ElementId {
         (SharedString::from(format!("{part}-{}", self.ts)), 0).into()
     }
@@ -212,7 +219,6 @@ impl RenderOnce for MessageRow {
                     .px_4()
                     .py_1()
                     .relative()
-                    .hover(|this| this.bg(cx.theme().accent.opacity(0.4)))
                     .child(self.render_gutter(&clock, gutter, cx))
                     .child(self.render_content(&clock, cx))
                     .child(self.render_hover_actions(&group, cx)),
@@ -226,6 +232,7 @@ impl MessageRow {
     fn render_gutter(&self, clock: &str, size: gpui::Pixels, cx: &App) -> AnyElement {
         if self.grouped || self.system {
             return div()
+                .id(self.element_id("gutter-clock"))
                 .w(size)
                 .flex_shrink_0()
                 .pt(px(2.))
@@ -233,6 +240,10 @@ impl MessageRow {
                 .text_color(cx.theme().muted_foreground)
                 .invisible()
                 .group_hover(format!("msg-{}", self.ts), |this| this.visible())
+                .tooltip({
+                    let full = self.timestamp_tooltip();
+                    move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                })
                 .child(SharedString::from(clock.to_string()))
                 .into_any_element();
         }
@@ -298,8 +309,13 @@ impl MessageRow {
                         .child(div().font_semibold().text_sm().child(self.author.clone()))
                         .child(
                             div()
+                                .id(self.element_id("clock"))
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
+                                .tooltip({
+                                    let full = self.timestamp_tooltip();
+                                    move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                                })
                                 .child(SharedString::from(clock.to_string())),
                         ),
                 )

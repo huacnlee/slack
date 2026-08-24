@@ -15,13 +15,16 @@ use gpui_component::{ActiveTheme, WindowExt as _, h_flex, notification::Notifica
 use slack_api::models::Ts;
 
 use crate::actions::{
-    CloseThread, FocusComposer, OpenQuickSwitcher, OpenSearch, Reload, ToggleTheme,
-    WORKSPACE_CONTEXT,
+    CloseThread, FocusComposer, GoBack, GoForward, OpenQuickSwitcher, OpenSearch, Reload,
+    ToggleTheme, WORKSPACE_CONTEXT,
 };
+use crate::activity::activity_view::{ActivityEvent, ActivityView};
 use crate::channel::channel_view::{ChannelEvent, ChannelView};
 use crate::channel::thread_view::{ThreadEvent, ThreadView};
 use crate::search::search_view::{SearchEvent, SearchView};
+use crate::workspace::history::History;
 use crate::workspace::quick_switcher::{QuickSwitcher, QuickSwitcherEvent};
+use crate::workspace::rail::{Pane, Rail, RailEvent};
 use crate::workspace::sidebar::{SidebarEvent, SidebarView};
 use crate::workspace::store::{WorkspaceEvent, WorkspaceStore};
 
@@ -46,7 +49,13 @@ pub enum WorkspaceViewEvent {
 
 pub struct WorkspaceView {
     store: Entity<WorkspaceStore>,
+    rail: Entity<Rail>,
     sidebar: Entity<SidebarView>,
+    activity: Entity<ActivityView>,
+    /// Which navigation pane the rail is pointing at.
+    pane: Pane,
+    /// Where the reader has been, for Back, Forward, and the recents list.
+    history: History,
     channel: Entity<ChannelView>,
     thread: Option<Entity<ThreadView>>,
     /// Retained so the panes keep their widths across a relayout.
@@ -62,7 +71,9 @@ impl EventEmitter<WorkspaceViewEvent> for WorkspaceView {}
 
 impl WorkspaceView {
     pub fn new(store: Entity<WorkspaceStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let rail = cx.new(|_| Rail::new(store.clone()));
         let sidebar = cx.new(|cx| SidebarView::new(store.clone(), window, cx));
+        let activity = cx.new(|cx| ActivityView::new(store.clone(), cx));
         let channel = cx.new(|cx| ChannelView::new(store.clone(), window, cx));
         let quick_switcher = cx.new(|cx| QuickSwitcher::new(store.clone(), window, cx));
         let search = cx.new(|cx| SearchView::new(store.clone(), window, cx));
@@ -72,6 +83,19 @@ impl WorkspaceView {
         let subscriptions = vec![
             cx.subscribe_in(&store, window, Self::on_store_event),
             cx.subscribe_in(&sidebar, window, Self::on_sidebar_event),
+            cx.subscribe_in(&rail, window, |this, _, event: &RailEvent, _, cx| {
+                let RailEvent::Selected(pane) = event;
+                this.pane = *pane;
+                cx.notify();
+            }),
+            cx.subscribe_in(
+                &activity,
+                window,
+                |this, _, event: &ActivityEvent, window, cx| {
+                    let ActivityEvent::Open(id) = event;
+                    this.select_conversation(id.clone(), window, cx);
+                },
+            ),
             cx.subscribe_in(&channel, window, Self::on_channel_event),
             cx.subscribe_in(&quick_switcher, window, Self::on_switcher_event),
             cx.subscribe_in(&search, window, Self::on_search_event),
@@ -79,7 +103,11 @@ impl WorkspaceView {
 
         Self {
             store,
+            rail,
             sidebar,
+            activity,
+            pane: Pane::Chats,
+            history: History::default(),
             channel,
             thread: None,
             shell_panes,
@@ -129,14 +157,49 @@ impl WorkspaceView {
         }
     }
 
+    /// Step back to the previously open conversation.
+    fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.history.back() {
+            self.open_without_history(id, window, cx);
+        }
+    }
+
+    fn go_forward(&mut self, _: &GoForward, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.history.forward() {
+            self.open_without_history(id, window, cx);
+        }
+    }
+
+    /// Open a conversation that history is already tracking.
+    ///
+    /// Separate from `select_conversation` because walking the path must not
+    /// itself record a visit — that would make Back a loop.
+    fn open_without_history(
+        &mut self,
+        id: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.thread = None;
+        self.store.update(cx, |store, cx| store.select(id, cx));
+        let channel = self.channel.clone();
+        channel.update(cx, |channel, cx| channel.focus_composer(window, cx));
+        self.update_window_title(window, cx);
+        cx.notify();
+    }
+
     fn open_quick_switcher(
         &mut self,
         _: &OpenQuickSwitcher,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let recent = self.history.recent();
         let switcher = self.quick_switcher.clone();
-        switcher.update(cx, |switcher, cx| switcher.reset(window, cx));
+        switcher.update(cx, |switcher, cx| {
+            switcher.set_recent(recent, cx);
+            switcher.reset(window, cx);
+        });
 
         window.open_dialog(cx, move |dialog, _, _| {
             let switcher = switcher.clone();
@@ -198,6 +261,7 @@ impl WorkspaceView {
     ) {
         // Moving to another conversation makes the open thread irrelevant.
         self.thread = None;
+        self.history.visit(id.clone());
         self.store.update(cx, |store, cx| store.select(id, cx));
         let channel = self.channel.clone();
         channel.update(cx, |channel, cx| channel.focus_composer(window, cx));
@@ -244,7 +308,9 @@ impl WorkspaceView {
             WorkspaceEvent::SignedOut => cx.emit(WorkspaceViewEvent::SignedOut),
             WorkspaceEvent::Failed(message) => self.report(message.clone(), window, cx),
             WorkspaceEvent::ConversationsChanged | WorkspaceEvent::SelectionChanged => {
-                self.update_window_title(window, cx)
+                self.update_window_title(window, cx);
+                let unread = self.store.read(cx).total_unread() > 0;
+                self.rail.update(cx, |rail, cx| rail.set_unread(unread, cx));
             }
             _ => {}
         }
@@ -257,8 +323,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let _ = window;
         match event {
-            SidebarEvent::Open(id) => self.select_conversation(id.clone(), window, cx),
             SidebarEvent::SignOutRequested => cx.emit(WorkspaceViewEvent::SignedOut),
         }
     }
@@ -364,6 +430,8 @@ impl Render for WorkspaceView {
             .key_context(WORKSPACE_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close_thread))
+            .on_action(cx.listener(Self::go_back))
+            .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(Self::open_quick_switcher))
             .on_action(cx.listener(Self::open_search))
             .on_action(cx.listener(Self::focus_composer))
@@ -371,6 +439,9 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::toggle_theme))
             .size_full()
             .bg(cx.theme().background)
+            // The rail is outside the resizable group: it is the one piece of
+            // navigation that must never move or change width.
+            .child(self.rail.clone())
             .child(
                 h_resizable("shell-panes")
                     .with_state(&self.shell_panes)
@@ -378,7 +449,10 @@ impl Render for WorkspaceView {
                         resizable_panel()
                             .size(px(SIDEBAR_DEFAULT_WIDTH))
                             .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
-                            .child(self.sidebar.clone()),
+                            .child(match self.pane {
+                                Pane::Chats => self.sidebar.clone().into_any_element(),
+                                Pane::Activity => self.activity.clone().into_any_element(),
+                            }),
                     )
                     .child(resizable_panel().child(work)),
             )

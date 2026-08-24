@@ -1133,7 +1133,17 @@ impl ChannelView {
             .min_h_0()
             .track_scroll(&self.scroll)
             .overflow_y_scrollbar()
-            .child(v_flex().w_full().py_2().children(out))
+            .child(
+                // A short conversation sits against the composer and grows
+                // upward, the way a transcript reads; only a full one starts
+                // at the top of the pane.
+                v_flex()
+                    .w_full()
+                    .min_h_full()
+                    .justify_end()
+                    .py_2()
+                    .children(out),
+            )
     }
 
     #[allow(clippy::too_many_arguments)]
