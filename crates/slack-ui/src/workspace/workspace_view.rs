@@ -22,7 +22,7 @@ use crate::activity::activity_view::{ActivityEvent, ActivityView};
 use crate::channel::channel_view::{ChannelEvent, ChannelView};
 use crate::channel::thread_view::{ThreadEvent, ThreadView};
 use crate::search::search_view::{SearchEvent, SearchView};
-use crate::workspace::direct_messages::DirectMessagesView;
+use crate::workspace::direct_messages::{DirectMessagesEvent, DirectMessagesView};
 use crate::workspace::history::History;
 use crate::workspace::quick_switcher::{QuickSwitcher, QuickSwitcherEvent};
 use crate::workspace::rail::{Pane, Rail, RailEvent};
@@ -91,6 +91,14 @@ impl WorkspaceView {
                 this.pane = *pane;
                 cx.notify();
             }),
+            cx.subscribe_in(
+                &direct_messages,
+                window,
+                |this, _, event: &DirectMessagesEvent, window, cx| {
+                    let DirectMessagesEvent::Open(id) = event;
+                    this.select_conversation(id.clone(), window, cx);
+                },
+            ),
             cx.subscribe_in(
                 &activity,
                 window,

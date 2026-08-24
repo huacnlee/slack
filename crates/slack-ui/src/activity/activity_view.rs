@@ -237,7 +237,7 @@ impl ActivityView {
         let channel = item.channel.clone();
         let (icon, reason) = match item.reason {
             Reason::Mention => (SlackIcon::AtSign, "Mention in"),
-            Reason::Unread => (SlackIcon::Chats, "Unread in"),
+            Reason::Unread => (SlackIcon::DirectMessages, "Unread in"),
         };
 
         v_flex()

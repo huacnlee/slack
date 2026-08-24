@@ -24,7 +24,7 @@ pub enum SlackIcon {
     AtSign,
     /// A message thread.
     Thread,
-    /// Conversations, for the navigation rail.
+    /// The workspace, for the navigation rail.
     Chats,
     /// Direct messages, for the navigation rail.
     DirectMessages,
@@ -54,7 +54,9 @@ impl IconNamed for SlackIcon {
             SlackIcon::Users => "users",
             SlackIcon::AtSign => "at-sign",
             SlackIcon::Thread => "message-square-reply",
-            SlackIcon::Chats => "message-circle",
+            // Home for the whole workspace, bubbles for the conversations —
+            // the pairing Slack's own rail uses.
+            SlackIcon::Chats => "house",
             SlackIcon::DirectMessages => "messages-square",
             SlackIcon::SmilePlus => "smile-plus",
             SlackIcon::Paperclip => "paperclip",

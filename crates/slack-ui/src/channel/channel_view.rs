@@ -19,10 +19,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
+    InteractiveElement as _, IntoElement, ListAlignment, ListState, ParentElement, Render,
+    SharedString, Styled, Subscription, Window, div, list, px,
 };
-use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
     ActiveTheme, Icon, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -36,7 +35,7 @@ use crate::channel::attachments::{self, Thumbnails};
 use crate::channel::composer::{Composer, ComposerEvent, ComposerMode};
 use crate::channel::markup_view::{HoverLink, OnLink, ResolveName};
 use crate::channel::message_row::{MessageActions, MessageRow, day_divider, emoji_glyph};
-use crate::channel::transcript::{Row, Transcript, rows};
+use crate::channel::transcript::{Row as TranscriptRow, Transcript, rows as rows_of};
 use crate::icons::SlackIcon;
 use crate::time;
 use crate::workspace::store::{WorkspaceEvent, WorkspaceStore};
@@ -46,14 +45,15 @@ use slack_api::markup::Link;
 const PAGE_SIZE: u32 = 50;
 /// Messages fetched when the reader asks for earlier history.
 const OLDER_PAGE_SIZE: u32 = 50;
-/// How close to the last row still counts as "reading the newest message".
-const TAIL_TOLERANCE: f32 = 48.0;
 /// Messages kept on disk per conversation. Enough to open into a readable
 /// screen offline without turning the cache into a full archive.
 const CACHED_MESSAGES: usize = 60;
 /// Directory lookups per loaded page, so a transcript full of former members
 /// cannot turn one screen into a burst of requests.
 const MAX_AUTHOR_LOOKUPS: usize = 12;
+/// How far beyond the viewport the list measures rows, so scrolling does not
+/// pop. A few screens of a dense transcript.
+const LIST_OVERDRAW: f32 = 2048.;
 
 /// "Ada joined", "Ada and Bob joined", "Ada, Bob and 5 others joined".
 ///
@@ -99,6 +99,27 @@ pub enum ChannelEvent {
     Failed(SharedString),
 }
 
+/// One row of the rendered transcript, as the list addresses them.
+///
+/// Timestamps rather than messages: the list asks for a row long after the
+/// shape was decided, and the message it names may have been edited since.
+#[derive(Debug, Clone)]
+enum Row {
+    LoadMore,
+    Day(SharedString),
+    /// A run of membership notices, collapsed into one line.
+    Joins(Vec<Ts>),
+    Message {
+        ts: Ts,
+        /// A continuation of the message above.
+        grouped: bool,
+        /// The first message the reader has not seen.
+        unread: bool,
+    },
+    /// Nothing to show yet.
+    Empty,
+}
+
 /// An in-progress edit of one message.
 ///
 /// The subscription lives here so it is dropped when the edit ends, rather
@@ -140,7 +161,11 @@ pub struct ChannelView {
     thumbnails: Thumbnails,
     /// Bounds what the decoded avatars and thumbnails on screen cost.
     images: Entity<crate::images::LruImageCache>,
-    scroll: ScrollHandle,
+    /// The virtualized transcript. `Bottom` alignment is what makes it read
+    /// like a chat log: it anchors at the newest message and grows upward.
+    list: ListState,
+    /// What the list draws, by index. Rebuilt whenever the transcript changes.
+    rows: Vec<Row>,
     focus: FocusHandle,
     /// Bumped on every conversation switch; replies carrying an older
     /// revision are stale and discarded.
@@ -174,7 +199,14 @@ impl ChannelView {
             uploading: None,
             thumbnails: Thumbnails::default(),
             images: crate::images::LruImageCache::new(crate::images::DEFAULT_CAPACITY, cx),
-            scroll: ScrollHandle::new(),
+            list: {
+                let list = ListState::new(0, ListAlignment::Bottom, px(LIST_OVERDRAW));
+                // New messages scroll into view while the reader is at the
+                // bottom, and stop doing so the moment they scroll up.
+                list.set_follow_mode(gpui::FollowMode::Tail);
+                list
+            },
+            rows: Vec::new(),
             focus: cx.focus_handle(),
             revision: 0,
             _subscriptions: subscriptions,
@@ -248,11 +280,12 @@ impl ChannelView {
                 // A conversation opens at its newest message, the same as it
                 // would after a fetch; otherwise the cached paint lands at the
                 // top and then jumps.
-                self.scroll_to_tail(window);
+                self.scroll_to_tail();
                 LoadState::Ready
             }
             _ => LoadState::Loading,
         };
+        self.rebuild_rows();
 
         let store = self.store.read(cx);
         self.unread_from = store
@@ -287,7 +320,7 @@ impl ChannelView {
         cx.spawn_in(window, async move |this, cx| {
             let page = client.conversation_history(&channel, PAGE_SIZE, None).await;
 
-            _ = this.update_in(cx, |this, window, cx| {
+            _ = this.update_in(cx, |this, _, cx| {
                 if this.revision != revision {
                     return;
                 }
@@ -296,11 +329,13 @@ impl ChannelView {
                         this.has_more = page.has_more;
                         this.transcript.replace(page.messages);
                         this.state = LoadState::Ready;
+                        this.rebuild_rows();
+                        this.scroll_to_tail();
                         this.persist(cx);
                         this.resolve_unknown_authors(cx);
                         this.fetch_thumbnails(cx);
                         this.mark_read(cx);
-                        this.scroll_to_tail(window);
+                        this.scroll_to_tail();
                     }
                     Err(err) => {
                         // Cached messages are more use than an error page.
@@ -347,6 +382,7 @@ impl ChannelView {
                     Ok(page) => {
                         this.has_more = page.has_more;
                         this.transcript.prepend(page.messages);
+                        this.rebuild_rows();
                     }
                     Err(err) => cx.emit(ChannelEvent::Failed(
                         format!("Could not load earlier messages: {err}").into(),
@@ -371,7 +407,6 @@ impl ChannelView {
 
         let client = self.store.read(cx).client().clone();
         let revision = self.revision;
-        let was_at_tail = self.is_at_tail();
 
         cx.spawn_in(window, async move |this, cx| {
             let page = match client
@@ -396,12 +431,13 @@ impl ChannelView {
                 return;
             }
 
-            _ = this.update_in(cx, |this, window, cx| {
+            _ = this.update_in(cx, |this, _, cx| {
                 if this.revision != revision {
                     return;
                 }
                 let newest = page.messages.last().map(|m| m.ts.clone());
                 this.transcript.merge(page.messages);
+                this.rebuild_rows();
                 if let Some(ts) = newest {
                     this.store
                         .update(cx, |store, cx| store.note_activity(&channel, ts, cx));
@@ -409,9 +445,6 @@ impl ChannelView {
                 this.state = LoadState::Ready;
                 this.persist(cx);
                 this.mark_read(cx);
-                if was_at_tail {
-                    this.scroll_to_tail(window);
-                }
                 cx.notify();
             });
         })
@@ -444,7 +477,7 @@ impl ChannelView {
                     });
                     if this.revision == revision {
                         this.fetch_new(window, cx);
-                        this.scroll_to_tail(window);
+                        this.scroll_to_tail();
                     }
                 }
                 Err(err) => {
@@ -526,6 +559,7 @@ impl ChannelView {
         // Remove it locally first: the row is gone from the reader's view the
         // moment they confirm, and a failed call puts it back.
         self.transcript.remove(&ts);
+        self.rebuild_rows();
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -585,6 +619,9 @@ impl ChannelView {
         }
         reactions.retain(|r| r.count > 0);
         self.transcript.set_reactions(&ts, reactions);
+        // The row is a different height now; the list caches heights, so it
+        // has to be told rather than merely redrawn.
+        self.invalidate_row(&ts);
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -647,7 +684,9 @@ impl ChannelView {
             move |this, composer, event, window, cx| match event {
                 ComposerEvent::Submit(text) => this.save_edit(ts.clone(), text.clone(), window, cx),
                 ComposerEvent::Cancel => {
-                    this.editing = None;
+                    if let Some(session) = this.editing.take() {
+                        this.invalidate_row(&session.ts);
+                    }
                     cx.notify();
                 }
                 _ => {
@@ -656,6 +695,7 @@ impl ChannelView {
             }
         });
         composer.update(cx, |composer, cx| composer.focus(window, cx));
+        self.invalidate_row(&ts);
         self.editing = Some(EditSession {
             ts,
             composer,
@@ -839,26 +879,13 @@ impl ChannelView {
 
     // ------------------------------------------------------------ scrolling
 
-    /// Whether the reader is looking at the newest message.
-    fn is_at_tail(&self) -> bool {
-        let offset = self.scroll.offset().y;
-        let max = self.scroll.max_offset().y;
-        // Offsets run negative as content scrolls up.
-        (offset + max).abs() <= px(TAIL_TOLERANCE)
-    }
-
-    /// Jump to the newest message once the new rows have been laid out.
+    /// Jump to the newest message.
     ///
-    /// Twice, on consecutive frames: `scroll_to_bottom` resolves against the
-    /// last layout, and the frame that adds a screenful of messages has not
-    /// measured them yet. The second pass lands on the real bottom.
-    fn scroll_to_tail(&self, window: &mut Window) {
-        let scroll = self.scroll.clone();
-        window.on_next_frame(move |window, _| {
-            scroll.scroll_to_bottom();
-            let scroll = scroll.clone();
-            window.on_next_frame(move |_, _| scroll.scroll_to_bottom());
-        });
+    /// The list follows the tail on its own while the reader is at the bottom;
+    /// this is for the moments that should override where they are — opening a
+    /// conversation, and sending.
+    fn scroll_to_tail(&self) {
+        self.list.scroll_to_end();
     }
 
     // ------------------------------------------------------------ events
@@ -1050,121 +1077,175 @@ impl ChannelView {
             })
     }
 
-    fn render_transcript(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (me, emoji) = {
-            let store = self.store.read(cx);
-            (
-                SharedString::from(store.identity().user_id.clone()),
-                Rc::new(store.emoji().clone()),
-            )
-        };
-        let actions = self.message_actions(cx);
-        let entries = self.transcript.entries();
-
-        let mut out: Vec<gpui::AnyElement> = Vec::with_capacity(entries.len() + 4);
-
+    /// Work out what rows the transcript has, without rendering any of them.
+    ///
+    /// The list asks for rows by index, so the shape of the transcript — where
+    /// the day dividers fall, which messages are continuations, where the
+    /// unread mark sits — has to be decided up front and stay fixed until the
+    /// transcript itself changes. Deciding it inside the render callback would
+    /// mean walking the whole conversation to draw one visible row.
+    fn rebuild_rows(&mut self) {
+        let mut rows = Vec::with_capacity(self.transcript.len() + 4);
         if self.has_more {
-            out.push(
-                h_flex()
-                    .w_full()
-                    .justify_center()
-                    .py_2()
-                    .child(
-                        Button::new("load-older")
-                            .ghost()
-                            .small()
-                            .label("Load earlier messages")
-                            .loading(self.loading_older)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.fetch_older(window, cx)
-                            })),
-                    )
-                    .into_any_element(),
-            );
+            rows.push(Row::LoadMore);
         }
 
-        let mut previous: Option<&slack_api::models::Message> = None;
+        let mut previous: Option<&Message> = None;
         let mut divider_shown = false;
 
-        for row in rows(entries) {
+        for row in rows_of(self.transcript.entries()) {
             let Some(first) = (match &row {
-                Row::Message(entry) => Some(*entry),
-                Row::Joins(run) => run.first().copied(),
+                TranscriptRow::Message(entry) => Some(*entry),
+                TranscriptRow::Joins(run) => run.first().copied(),
             }) else {
                 continue;
             };
             let message = &first.message;
 
             if previous.is_none_or(|p| time::crosses_day_boundary(&p.ts, &message.ts)) {
-                out.push(day_divider(
-                    SharedString::from(time::day_heading(&message.ts)),
-                    cx,
-                ));
+                rows.push(Row::Day(SharedString::from(time::day_heading(&message.ts))));
                 previous = None;
             }
 
-            if let Row::Joins(run) = &row {
-                out.push(self.render_joins(run, cx));
+            if let TranscriptRow::Joins(run) = &row {
+                rows.push(Row::Joins(run.iter().map(|e| e.ts().clone()).collect()));
                 previous = Some(&run[run.len() - 1].message);
                 continue;
             }
 
-            let unread_here = !divider_shown
+            let unread = !divider_shown
                 && self
                     .unread_from
                     .as_ref()
                     .is_some_and(|mark| message.ts.as_f64() > mark.as_f64());
-            divider_shown |= unread_here;
+            divider_shown |= unread;
 
-            if let Some(session) = &self.editing
-                && session.ts == message.ts
-            {
-                out.push(
-                    div()
+            // A run of messages from one person within a few minutes reads as
+            // one block; repeating the avatar and name would only add noise.
+            let grouped = previous.is_some_and(|p| {
+                p.author_id() == message.author_id()
+                    && !p.is_system_notice()
+                    && !message.is_system_notice()
+                    && time::within_grouping_window(&p.ts, &message.ts)
+            }) && !unread;
+
+            rows.push(Row::Message {
+                ts: message.ts.clone(),
+                grouped,
+                unread,
+            });
+            previous = Some(message);
+        }
+
+        if rows.iter().all(|row| matches!(row, Row::LoadMore)) {
+            rows.push(Row::Empty);
+        }
+
+        self.rows = rows;
+        self.list.reset(self.rows.len());
+    }
+
+    /// Tell the list that one row's content changed, so it remeasures.
+    fn invalidate_row(&self, ts: &Ts) {
+        let found = self.rows.iter().position(|row| match row {
+            Row::Message { ts: row_ts, .. } => row_ts == ts,
+            _ => false,
+        });
+        if let Some(index) = found {
+            self.list.splice(index..index + 1, 1);
+        }
+    }
+
+    /// Draw one row. Called by the list for the rows that are on screen.
+    fn render_row(
+        &mut self,
+        index: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(row) = self.rows.get(index).cloned() else {
+            return div().into_any_element();
+        };
+
+        match row {
+            Row::LoadMore => h_flex()
+                .w_full()
+                .justify_center()
+                .py_2()
+                .child(
+                    Button::new("load-older")
+                        .ghost()
+                        .small()
+                        .label("Load earlier messages")
+                        .loading(self.loading_older)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.fetch_older(window, cx)
+                        })),
+                )
+                .into_any_element(),
+
+            Row::Day(label) => day_divider(label, cx),
+
+            Row::Joins(timestamps) => {
+                let run: Vec<&crate::channel::transcript::Entry> = timestamps
+                    .iter()
+                    .filter_map(|ts| self.transcript.get(ts))
+                    .collect();
+                self.render_joins(&run, cx)
+            }
+
+            Row::Empty => self.render_empty(cx),
+
+            Row::Message {
+                ts,
+                grouped,
+                unread,
+            } => {
+                // An edit replaces the row in place, so the composer appears
+                // where the message was.
+                if let Some(session) = &self.editing
+                    && session.ts == ts
+                {
+                    return div()
                         .w_full()
                         .px_4()
                         .py_2()
                         .child(session.composer.clone())
-                        .into_any_element(),
-                );
-                previous = Some(message);
-                continue;
+                        .into_any_element();
+                }
+
+                let Some(entry) = self.transcript.get(&ts) else {
+                    return div().into_any_element();
+                };
+                let message = entry.message.clone();
+                let (me, emoji) = {
+                    let store = self.store.read(cx);
+                    (
+                        SharedString::from(store.identity().user_id.clone()),
+                        Rc::new(store.emoji().clone()),
+                    )
+                };
+                let actions = self.message_actions(cx);
+
+                self.render_message(&message, grouped, unread, &me, &emoji, &actions, cx)
             }
-
-            out.push(self.render_message(
-                message,
-                previous,
-                unread_here,
-                &me,
-                &emoji,
-                &actions,
-                cx,
-            ));
-            previous = Some(message);
         }
+    }
 
-        if out.is_empty() {
-            out.push(self.render_empty(cx));
-        }
-
+    fn render_transcript(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             // The cache is set before `id`, because it belongs to `Div`.
             .image_cache(self.images.clone())
             .id("transcript")
             .flex_1()
+            .min_w_0()
             .min_h_0()
-            .track_scroll(&self.scroll)
-            .overflow_y_scrollbar()
             .child(
-                // A short conversation sits against the composer and grows
-                // upward, the way a transcript reads; only a full one starts
-                // at the top of the pane.
-                v_flex()
-                    .w_full()
-                    .min_h_full()
-                    .justify_end()
-                    .py_2()
-                    .children(out),
+                list(
+                    self.list.clone(),
+                    cx.processor(|this, index, window, cx| this.render_row(index, window, cx)),
+                )
+                .size_full(),
             )
     }
 
@@ -1172,7 +1253,7 @@ impl ChannelView {
     fn render_message(
         &self,
         message: &Message,
-        previous: Option<&Message>,
+        grouped: bool,
         unread_here: bool,
         me: &SharedString,
         emoji: &Rc<EmojiIndex>,
@@ -1190,15 +1271,6 @@ impl ChannelView {
             .user(&author_id)
             .and_then(|u| u.avatar_url())
             .map(|url| SharedString::from(url.to_string()));
-
-        // A run of messages from one person within a few minutes reads as one
-        // block; repeating the avatar and name would only add noise.
-        let grouped = previous.is_some_and(|p| {
-            p.author_id() == message.author_id()
-                && !p.is_system_notice()
-                && !message.is_system_notice()
-                && time::within_grouping_window(&p.ts, &message.ts)
-        });
 
         let entry = self.transcript.get(&message.ts);
         let blocks = entry
@@ -1226,7 +1298,7 @@ impl ChannelView {
                 .collect(),
         )
         .edited(message.edited.is_some())
-        .grouped(grouped && !unread_here)
+        .grouped(grouped)
         .own(store.is_me(&author_id))
         .system(message.is_system_notice())
         .unread_divider(unread_here)
