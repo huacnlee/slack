@@ -7,12 +7,14 @@
 
 use std::rc::Rc;
 
+use gpui::HitboxBehavior;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement,
     RenderOnce, SharedString, SharedUri, StatefulInteractiveElement as _, Styled, Window, div, img,
     px,
 };
+use gpui_base::{ElementExt as _, TextSelectionHandle, TextSelectionRegistration};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::popover::Popover;
 use gpui_component::tooltip::Tooltip;
@@ -92,6 +94,8 @@ pub struct MessageRow {
     /// Threads cannot be opened from inside a thread.
     threadable: bool,
     me: SharedString,
+    /// Lets this message take part in a window-wide text selection.
+    selection: Option<(TextSelectionHandle, u64)>,
     actions: MessageActions,
 }
 
@@ -122,8 +126,20 @@ impl MessageRow {
             unread_divider: false,
             threadable: true,
             me: me.into(),
+            selection: None,
             actions,
         }
+    }
+
+    /// Join the window's text selection at `order` in reading order.
+    ///
+    /// The row registers its area rather than its glyphs, so a drag selects
+    /// whole messages and copying yields their text in order. Character-level
+    /// selection inside one message would mean replacing `InteractiveText`,
+    /// which is what makes a mention clickable and hoverable.
+    pub fn selection(mut self, handle: TextSelectionHandle, order: u64) -> Self {
+        self.selection = Some((handle, order));
+        self
     }
 
     pub fn avatar(mut self, url: Option<SharedString>) -> Self {
@@ -206,9 +222,23 @@ impl RenderOnce for MessageRow {
         let clock = time::clock(&self.ts);
         let gutter = window.rem_size() * GUTTER_REMS;
 
+        let selection = self.selection.clone();
+
         v_flex()
             .w_full()
             .when(self.unread_divider, |this| this.child(unread_divider(cx)))
+            .when_some(selection, |this, (handle, order)| {
+                this.on_prepaint(move |bounds, window, cx| {
+                    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                    handle.register(
+                        TextSelectionRegistration::new(hitbox, bounds)
+                            .with_document_order(order)
+                            .with_text_bounds(vec![bounds]),
+                        window,
+                        cx,
+                    );
+                })
+            })
             .child(
                 h_flex()
                     .id(self.element_id("row"))

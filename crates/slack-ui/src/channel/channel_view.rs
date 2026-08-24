@@ -14,6 +14,7 @@
 //! made, and a fetch that fails leaves them there rather than replacing a
 //! readable conversation with an error.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -161,6 +162,9 @@ pub struct ChannelView {
     thumbnails: Thumbnails,
     /// Bounds what the decoded avatars and thumbnails on screen cost.
     images: Entity<crate::images::LruImageCache>,
+    /// One selection participant per message, so a drag across the transcript
+    /// copies the messages it covered, in order.
+    selections: HashMap<Ts, gpui_base::TextSelectionHandle>,
     /// The virtualized transcript. `Bottom` alignment is what makes it read
     /// like a chat log: it anchors at the newest message and grows upward.
     list: ListState,
@@ -198,6 +202,7 @@ impl ChannelView {
             editing: None,
             uploading: None,
             thumbnails: Thumbnails::default(),
+            selections: HashMap::new(),
             images: crate::images::LruImageCache::new(crate::images::DEFAULT_CAPACITY, cx),
             list: {
                 let list = ListState::new(0, ListAlignment::Bottom, px(LIST_OVERDRAW));
@@ -285,7 +290,7 @@ impl ChannelView {
             }
             _ => LoadState::Loading,
         };
-        self.rebuild_rows();
+        self.rebuild_rows(cx);
 
         let store = self.store.read(cx);
         self.unread_from = store
@@ -329,7 +334,7 @@ impl ChannelView {
                         this.has_more = page.has_more;
                         this.transcript.replace(page.messages);
                         this.state = LoadState::Ready;
-                        this.rebuild_rows();
+                        this.rebuild_rows(cx);
                         this.scroll_to_tail();
                         this.persist(cx);
                         this.resolve_unknown_authors(cx);
@@ -382,7 +387,7 @@ impl ChannelView {
                     Ok(page) => {
                         this.has_more = page.has_more;
                         this.transcript.prepend(page.messages);
-                        this.rebuild_rows();
+                        this.rebuild_rows(cx);
                     }
                     Err(err) => cx.emit(ChannelEvent::Failed(
                         format!("Could not load earlier messages: {err}").into(),
@@ -437,7 +442,7 @@ impl ChannelView {
                 }
                 let newest = page.messages.last().map(|m| m.ts.clone());
                 this.transcript.merge(page.messages);
-                this.rebuild_rows();
+                this.rebuild_rows(cx);
                 if let Some(ts) = newest {
                     this.store
                         .update(cx, |store, cx| store.note_activity(&channel, ts, cx));
@@ -559,7 +564,7 @@ impl ChannelView {
         // Remove it locally first: the row is gone from the reader's view the
         // moment they confirm, and a failed call puts it back.
         self.transcript.remove(&ts);
-        self.rebuild_rows();
+        self.rebuild_rows(cx);
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -1084,7 +1089,7 @@ impl ChannelView {
     /// unread mark sits — has to be decided up front and stay fixed until the
     /// transcript itself changes. Deciding it inside the render callback would
     /// mean walking the whole conversation to draw one visible row.
-    fn rebuild_rows(&mut self) {
+    fn rebuild_rows(&mut self, cx: &mut App) {
         let mut rows = Vec::with_capacity(self.transcript.len() + 4);
         if self.has_more {
             rows.push(Row::LoadMore);
@@ -1140,6 +1145,29 @@ impl ChannelView {
         if rows.iter().all(|row| matches!(row, Row::LoadMore)) {
             rows.push(Row::Empty);
         }
+
+        // One selection participant per message, carrying the text a copy
+        // should produce. Handles for messages that scrolled out of the window
+        // are dropped with them.
+        let mut selections = HashMap::with_capacity(self.transcript.len());
+        for row in &rows {
+            let Row::Message { ts, .. } = row else {
+                continue;
+            };
+            let Some(entry) = self.transcript.get(ts) else {
+                continue;
+            };
+            let text = slack_api::markup::to_plain_text(&entry.message.text);
+            let handle = match self.selections.remove(ts) {
+                Some(handle) => {
+                    handle.set_fallback_copy_text(text, cx);
+                    handle
+                }
+                None => gpui_base::TextSelectionHandle::new(text, cx),
+            };
+            selections.insert(ts.clone(), handle);
+        }
+        self.selections = selections;
 
         self.rows = rows;
         self.list.reset(self.rows.len());
@@ -1227,7 +1255,13 @@ impl ChannelView {
                 };
                 let actions = self.message_actions(cx);
 
-                self.render_message(&message, grouped, unread, &me, &emoji, &actions, cx)
+                let selection = self
+                    .selections
+                    .get(&ts)
+                    .map(|handle| (handle.clone(), index as u64));
+                self.render_message(
+                    &message, grouped, unread, selection, &me, &emoji, &actions, cx,
+                )
             }
         }
     }
@@ -1255,6 +1289,7 @@ impl ChannelView {
         message: &Message,
         grouped: bool,
         unread_here: bool,
+        selection: Option<(gpui_base::TextSelectionHandle, u64)>,
         me: &SharedString,
         emoji: &Rc<EmojiIndex>,
         actions: &MessageActions,
@@ -1302,6 +1337,9 @@ impl ChannelView {
         .own(store.is_me(&author_id))
         .system(message.is_system_notice())
         .unread_divider(unread_here)
+        .when_some(selection, |row, (handle, order)| {
+            row.selection(handle, order)
+        })
         .into_any_element()
     }
 

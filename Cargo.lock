@@ -6637,6 +6637,7 @@ dependencies = [
  "chrono",
  "futures",
  "gpui",
+ "gpui-base",
  "gpui-component",
  "log",
  "lru",
