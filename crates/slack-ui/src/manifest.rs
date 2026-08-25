@@ -5,6 +5,14 @@
 //! manifest is generated from [`REQUIRED_SCOPES`] rather than written out
 //! twice, so the list the sign-in screen shows and the list Slack is asked for
 //! cannot drift apart.
+//!
+//! `rtm:stream` is deliberately absent. The realtime socket would be the right
+//! way to hear about a message the moment it is posted, but Slack stopped
+//! granting that scope to apps created after 2021: asking for it gets the
+//! manifest rejected outright, and an app that slips it past the form is
+//! handed a token without it anyway. The client asks the socket for a
+//! connection at startup regardless — a token that does have the scope, from
+//! an older app, still works — and falls back to polling when it is refused.
 
 use gpui::SharedString;
 
@@ -31,8 +39,6 @@ pub const REQUIRED_SCOPES: &[&str] = &[
     "groups:read",
     "im:read",
     "mpim:read",
-    // The realtime socket: arrivals and typing, the moment they happen.
-    "rtm:stream",
     "channels:history",
     "groups:history",
     "im:history",

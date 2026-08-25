@@ -14,11 +14,13 @@ impl WorkspaceStore {
             let mut interval = ACTIVE_POLL;
             loop {
                 cx.background_executor().timer(interval).await;
+                // Re-read each cycle: a refusal widens this, and time healing
+                // that refusal narrows it back.
                 let next = this.update(cx, |this, cx| {
                     if this.selected.is_some() {
                         cx.emit(WorkspaceEvent::ActivityPolled);
                     }
-                    this.activity_interval
+                    this.activity_interval()
                 });
                 match next {
                     Ok(next) => interval = next,

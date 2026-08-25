@@ -41,15 +41,24 @@ use slack_api::models::{
 use slack_api::{ALL_CONVERSATION_TYPES, Cache, RtmEvent, SlackClient};
 
 use crate::snapshot::WorkspaceSnapshot;
+use sweep::now_seconds;
 
 /// How often the active conversation is checked for new messages.
 ///
-/// Slack apps created after May 2025 are limited to one `conversations.history`
-/// request per minute. Older apps get a far higher tier, so the client starts
-/// responsive and falls back to [`ACTIVE_POLL_THROTTLED`] the first time Slack
-/// says it is asking too often — rather than assuming the worst for everyone.
-const ACTIVE_POLL: Duration = Duration::from_secs(6);
+/// Without the realtime socket this interval *is* the client's idea of "now",
+/// so it is short: `conversations.history` sits in a tier that tolerates
+/// roughly fifty requests a minute, and one conversation asking every three
+/// seconds spends a fifth of that. A refusal still widens it to
+/// [`ACTIVE_POLL_THROTTLED`] — but only for as long as the refusal is recent.
+const ACTIVE_POLL: Duration = Duration::from_secs(3);
 const ACTIVE_POLL_THROTTLED: Duration = Duration::from_secs(65);
+
+/// How long a refusal keeps the client cautious.
+///
+/// Slack's limit is a window, not a verdict; once one has passed with nothing
+/// refused, the reason to hold back is gone. Staying slow forever would mean a
+/// single crowded moment cost every later one.
+const THROTTLE_TTL: i64 = 180;
 
 /// How often the background sweep learns more about the conversation list.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(20);
@@ -114,11 +123,10 @@ pub struct WorkspaceStore {
     drafts: HashMap<SharedString, String>,
     load_state: LoadState,
     connectivity: Connectivity,
-    /// How often to look for new messages, widened once Slack rate-limits us.
-    activity_interval: Duration,
     realtime: RealtimeState,
-    /// Whether Slack has refused a history request this session.
-    throttled: bool,
+    /// When Slack last refused a history request, which widens the poll and
+    /// the sweep until it is old enough to stop mattering.
+    refused_at: Option<i64>,
     /// Set once the socket is open; typing is the one thing sent over it.
     typing_sender: Option<slack_api::RtmSender>,
     /// Who is typing where. Entries expire rather than being cleared, since
@@ -146,9 +154,8 @@ impl WorkspaceStore {
             drafts: HashMap::new(),
             load_state: LoadState::Loading,
             connectivity: Connectivity::Online,
-            activity_interval: ACTIVE_POLL,
             realtime: RealtimeState::Connecting,
-            throttled: false,
+            refused_at: None,
             typing_sender: None,
             typing: HashMap::new(),
             _polling: Vec::new(),
@@ -407,9 +414,6 @@ impl WorkspaceStore {
     /// Note that Slack rate-limited a history request, and slow the poll down
     /// to the documented floor for the strictest tier.
     ///
-    /// This is one-way on purpose: a workspace that hit the limit once will
-    /// hit it again, and flapping between intervals would just burn the quota
-    /// that is left.
     /// Slack refused a history request.
     ///
     /// The client paces itself per method, so this is not about avoiding the
@@ -417,13 +421,27 @@ impl WorkspaceStore {
     /// sweep off as well as the poll means the conversation someone is reading
     /// is not queued behind a background scan of one they are not.
     pub fn note_rate_limit(&mut self, cx: &mut Context<Self>) {
-        if self.throttled {
+        let already = self.is_throttled();
+        self.refused_at = Some(now_seconds());
+        if already {
             return;
         }
-        log::info!("Slack rate-limited history; polling once a minute and sweeping rarely");
-        self.throttled = true;
-        self.activity_interval = ACTIVE_POLL_THROTTLED;
+        log::info!("Slack rate-limited history; polling and sweeping less often for a few minutes");
         cx.notify();
+    }
+
+    /// Whether a refusal is recent enough to still hold the client back.
+    fn is_throttled(&self) -> bool {
+        throttled(self.refused_at, now_seconds())
+    }
+
+    /// How long to wait before looking at the open conversation again.
+    pub(crate) fn activity_interval(&self) -> Duration {
+        if self.is_throttled() {
+            ACTIVE_POLL_THROTTLED
+        } else {
+            ACTIVE_POLL
+        }
     }
 
     /// How long the sweep should wait before its next probe.
@@ -432,7 +450,7 @@ impl WorkspaceStore {
     /// come through as events, so probing for them spends a request to learn
     /// something already known.
     pub(crate) fn sweep_interval(&self) -> Option<Duration> {
-        sweep::interval(&self.realtime, self.throttled)
+        sweep::interval(&self.realtime, self.is_throttled())
     }
 
     /// Apply a locally known new message so the sidebar reorders immediately,
@@ -454,5 +472,33 @@ impl WorkspaceStore {
         self.persist();
         cx.emit(WorkspaceEvent::ConversationsChanged);
         cx.notify();
+    }
+}
+
+/// Whether a refusal at `refused_at` still applies at `now`.
+fn throttled(refused_at: Option<i64>, now: i64) -> bool {
+    refused_at.is_some_and(|at| now - at < THROTTLE_TTL)
+}
+
+#[cfg(test)]
+mod throttle_tests {
+    use super::*;
+
+    #[test]
+    fn a_client_that_has_never_been_refused_runs_at_full_speed() {
+        assert!(!throttled(None, 1_000));
+    }
+
+    #[test]
+    fn a_fresh_refusal_holds_the_client_back() {
+        assert!(throttled(Some(1_000), 1_000 + THROTTLE_TTL - 1));
+    }
+
+    #[test]
+    fn a_refusal_stops_mattering_once_its_window_has_passed() {
+        // The bug this replaces: one crowded moment slowed the client for the
+        // rest of the session, so a conversation stayed a minute out of date
+        // long after Slack would have served it.
+        assert!(!throttled(Some(1_000), 1_000 + THROTTLE_TTL));
     }
 }
