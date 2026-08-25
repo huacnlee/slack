@@ -35,4 +35,4 @@ pub use error::{Error, Result};
 pub use methods::{
     ALL_CONVERSATION_TYPES, MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, SearchMatch, SearchResults,
 };
-pub use rtm::RtmEvent;
+pub use rtm::{RtmEvent, RtmSender};

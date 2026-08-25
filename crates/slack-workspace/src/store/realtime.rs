@@ -49,8 +49,9 @@ pub(super) struct Typist {
 
 impl WorkspaceStore {
     /// Consume the event stream for as long as this store lives.
-    pub(super) fn spawn_realtime(&self, cx: &mut Context<Self>) -> Task<()> {
-        let mut events = self.client.realtime();
+    pub(super) fn spawn_realtime(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let (sender, mut events) = self.client.realtime();
+        self.typing_sender = Some(sender);
 
         cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
@@ -221,6 +222,17 @@ impl WorkspaceStore {
     fn forget_typist(&mut self, channel: &str, user: &str) {
         if let Some(typists) = self.typing.get_mut(channel) {
             typists.retain(|t| t.user != user);
+        }
+    }
+
+    /// Say that the reader is typing here.
+    ///
+    /// Safe to call on every keystroke — the sender decides how often that is
+    /// worth putting on the wire, and does nothing at all when there is no
+    /// socket, which is the same thing it would mean to the people watching.
+    pub fn typing_in(&self, channel: &str) {
+        if let Some(sender) = &self.typing_sender {
+            sender.typing(channel);
         }
     }
 

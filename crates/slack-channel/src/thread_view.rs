@@ -24,6 +24,7 @@ use slack_api::models::Ts;
 
 use crate::composer::{Composer, ComposerEvent, ComposerMode};
 use crate::message_row::{MessageActions, MessageRow};
+use crate::selection::{THREAD_ORDER, reading_order};
 use crate::transcript::Transcript;
 use slack_ui::time;
 use slack_workspace::store::{WorkspaceEvent, WorkspaceStore};
@@ -52,6 +53,9 @@ pub struct ThreadView {
     error: Option<SharedString>,
     composer: Entity<Composer>,
     scroll: ScrollHandle,
+    /// One participant per block of each message, so a drag in the thread
+    /// picks out characters the way it does in the transcript.
+    selections: crate::selection::Selections,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -86,6 +90,7 @@ impl ThreadView {
             error: None,
             composer,
             scroll: ScrollHandle::new(),
+            selections: Default::default(),
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
@@ -348,6 +353,13 @@ impl Render for ThreadView {
         let actions = self.message_actions(cx);
         let entries = self.transcript.entries();
 
+        self.selections.refresh(
+            entries
+                .iter()
+                .map(|entry| (&entry.message.ts, entry.blocks.as_slice())),
+            cx,
+        );
+
         let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(entries.len());
         let mut previous: Option<&slack_api::models::Message> = None;
 
@@ -391,6 +403,9 @@ impl Render for ThreadView {
                 .own(own)
                 .system(message.is_system_notice())
                 .threadable(false)
+                .when_some(self.selections.get(&message.ts), |row, handles| {
+                    row.selection(handles, reading_order(THREAD_ORDER, ix))
+                })
                 .into_any_element(),
             );
 

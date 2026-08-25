@@ -11,10 +11,13 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ElementId, FontStyle, FontWeight, HighlightStyle, InteractiveText, IntoElement,
-    ParentElement, RenderOnce, SharedString, StrikethroughStyle, Styled, StyledText,
+    ParentElement, RenderOnce, SharedString, StrikethroughStyle, Styled, StyledText, TextLayout,
     UnderlineStyle, Window, div, px,
 };
+use gpui_base::TextSelectionHandle;
 use gpui_component::{ActiveTheme, StyledExt as _, v_flex};
+
+use crate::selection::SelectableText;
 
 use slack_api::emoji::EmojiIndex;
 use slack_api::markup::{Block, Link, Span};
@@ -44,6 +47,9 @@ pub struct MessageBody {
     hover_link: Option<HoverLink>,
     /// Renders quieter, for previews inside a sidebar row or search hit.
     muted: bool,
+    /// One selection participant per block, plus where the first of them sits
+    /// in the window's reading order.
+    selection: Option<(Rc<Vec<TextSelectionHandle>>, u64)>,
 }
 
 impl MessageBody {
@@ -56,7 +62,18 @@ impl MessageBody {
             resolve_name: None,
             hover_link: None,
             muted: false,
+            selection: None,
         }
+    }
+
+    /// Let a drag pick out characters in this body.
+    ///
+    /// The handles are per block and must outlive the frame — a selection that
+    /// vanished whenever the transcript repainted would be no selection at
+    /// all — so they are owned by the view and lent here.
+    pub fn selection(mut self, handles: Rc<Vec<TextSelectionHandle>>, base_order: u64) -> Self {
+        self.selection = Some((handles, base_order));
+        self
     }
 
     /// Supply the workspace directory so `<@U123>` renders as a person.
@@ -98,6 +115,13 @@ impl RenderOnce for MessageBody {
             .gap_1()
             .text_color(text_color)
             .children(self.blocks.iter().enumerate().map(|(ix, block)| {
+                // One participant per block, numbered from the body's own
+                // place in the document so blocks of different messages never
+                // collide in reading order.
+                let selection = self
+                    .selection
+                    .as_ref()
+                    .and_then(|(handles, base)| Some((handles.get(ix)?.clone(), base + ix as u64)));
                 render_block(
                     self.id.clone(),
                     ix,
@@ -106,6 +130,7 @@ impl RenderOnce for MessageBody {
                     self.on_link.clone(),
                     self.resolve_name.clone(),
                     self.hover_link.clone(),
+                    selection,
                     cx,
                 )
             }))
@@ -121,6 +146,7 @@ fn render_block(
     on_link: Option<OnLink>,
     resolve_name: Option<ResolveName>,
     hover_link: Option<HoverLink>,
+    selection: Option<(TextSelectionHandle, u64)>,
     cx: &App,
 ) -> gpui::AnyElement {
     match block {
@@ -142,13 +168,14 @@ fn render_block(
             .border_l_2()
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
-            .child(styled_text(
+            .child(selectable_text(
                 (id, ix),
                 spans,
                 emoji,
                 on_link,
                 resolve_name,
                 hover_link,
+                selection,
                 cx,
             ))
             .into_any_element(),
@@ -171,13 +198,14 @@ fn render_block(
                     .text_color(cx.theme().muted_foreground)
                     .child(if *ordered { "1." } else { "•" }),
             )
-            .child(div().flex_1().min_w_0().child(styled_text(
+            .child(div().flex_1().min_w_0().child(selectable_text(
                 (id, ix),
                 spans,
                 emoji,
                 on_link,
                 resolve_name,
                 hover_link,
+                selection,
                 cx,
             )))
             .into_any_element(),
@@ -186,20 +214,48 @@ fn render_block(
 
         Block::Paragraph(spans) => div()
             .w_full()
-            .child(styled_text(
+            .child(selectable_text(
                 (id, ix),
                 spans,
                 emoji,
                 on_link,
                 resolve_name,
                 hover_link,
+                selection,
                 cx,
             ))
             .into_any_element(),
     }
 }
 
+/// One block of text, taking part in the window's selection when it was given
+/// a handle to do it with.
+#[allow(clippy::too_many_arguments)]
+fn selectable_text(
+    id: impl Into<ElementId>,
+    spans: &[Span],
+    emoji: &EmojiIndex,
+    on_link: Option<OnLink>,
+    resolve_name: Option<ResolveName>,
+    hover_link: Option<HoverLink>,
+    selection: Option<(TextSelectionHandle, u64)>,
+    cx: &App,
+) -> gpui::AnyElement {
+    let (interactive, layout, text) =
+        styled_text(id, spans, emoji, on_link, resolve_name, hover_link, cx);
+    match selection {
+        Some((handle, order)) => {
+            SelectableText::new(interactive, layout, text, handle, order).into_any_element()
+        }
+        None => interactive.into_any_element(),
+    }
+}
+
 /// Flatten spans into one string plus the ranges that style or link them.
+///
+/// Hands back the laid-out text alongside the element, because mapping a drag
+/// to characters needs the geometry and only the layout has it.
+#[allow(clippy::too_many_arguments)]
 fn styled_text(
     id: impl Into<ElementId>,
     spans: &[Span],
@@ -208,7 +264,7 @@ fn styled_text(
     resolve_name: Option<ResolveName>,
     hover_link: Option<HoverLink>,
     cx: &App,
-) -> impl IntoElement {
+) -> (InteractiveText, TextLayout, SharedString) {
     let mut text = String::new();
     let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
     let mut clickable: Vec<Range<usize>> = Vec::new();
@@ -266,11 +322,15 @@ fn styled_text(
         highlights.push((range, style));
     }
 
-    let styled = StyledText::new(SharedString::from(text)).with_highlights(highlights);
+    let text = SharedString::from(text);
+    let styled = StyledText::new(text.clone()).with_highlights(highlights);
+    // A `TextLayout` is a shared handle, so this keeps reading the geometry
+    // the element computes after the styled text is handed over.
+    let layout = styled.layout().clone();
     let hover_targets = targets.clone();
     let hover_ranges = clickable.clone();
 
-    InteractiveText::new(id, styled)
+    let interactive = InteractiveText::new(id, styled)
         .when_some(on_link, |this, handler| {
             this.on_click(clickable, move |ix, window, cx| {
                 if let Some(link) = targets.get(ix) {
@@ -285,5 +345,7 @@ fn styled_text(
                 let ix = hover_ranges.iter().position(|r| r.contains(&offset))?;
                 hover(hover_targets.get(ix)?, window, cx)
             })
-        })
+        });
+
+    (interactive, layout, text)
 }

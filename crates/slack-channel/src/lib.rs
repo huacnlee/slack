@@ -11,5 +11,6 @@ pub mod forward;
 pub mod markup_view;
 pub mod message_row;
 pub mod quote;
+pub mod selection;
 pub mod thread_view;
 pub mod transcript;

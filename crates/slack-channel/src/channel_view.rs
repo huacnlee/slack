@@ -21,7 +21,6 @@ mod rows;
 
 use rows::Row;
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -134,9 +133,10 @@ pub struct ChannelView {
     thumbnails: Thumbnails,
     /// Bounds what the decoded avatars and thumbnails on screen cost.
     images: Entity<slack_ui::images::LruImageCache>,
-    /// One selection participant per message, so a drag across the transcript
-    /// copies the messages it covered, in order.
-    selections: HashMap<Ts, gpui_base::TextSelectionHandle>,
+    /// Selection participants per message, one for each of its blocks, so a
+    /// drag across the transcript picks out characters and copies them in the
+    /// order they were read.
+    selections: crate::selection::Selections,
     /// The virtualized transcript. `Bottom` alignment is what makes it read
     /// like a chat log: it anchors at the newest message and grows upward.
     list: ListState,
@@ -174,7 +174,7 @@ impl ChannelView {
             editing: None,
             uploading: None,
             thumbnails: Thumbnails::default(),
-            selections: HashMap::new(),
+            selections: Default::default(),
             images: slack_ui::images::LruImageCache::new(slack_ui::images::DEFAULT_CAPACITY, cx),
             list: {
                 let list = ListState::new(0, ListAlignment::Bottom, px(LIST_OVERDRAW));
@@ -334,11 +334,17 @@ impl ChannelView {
             ComposerEvent::Changed(text) => {
                 if let Some(channel) = self.channel.clone() {
                     let text = text.to_string();
+                    // Only while there is something to say: clearing a draft
+                    // is not typing, and neither is an empty box.
+                    if !text.trim().is_empty() {
+                        self.store.read(cx).typing_in(&channel);
+                    }
                     self.store
                         .update(cx, |store, _| store.set_draft(channel, text));
                 }
             }
             ComposerEvent::Attach => self.attach_file(window, cx),
+            ComposerEvent::EditLast => self.edit_last(window, cx),
             ComposerEvent::Cancel => {}
         }
     }

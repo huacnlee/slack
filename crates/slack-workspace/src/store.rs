@@ -119,6 +119,8 @@ pub struct WorkspaceStore {
     realtime: RealtimeState,
     /// Whether Slack has refused a history request this session.
     throttled: bool,
+    /// Set once the socket is open; typing is the one thing sent over it.
+    typing_sender: Option<slack_api::RtmSender>,
     /// Who is typing where. Entries expire rather than being cleared, since
     /// Slack never says anyone stopped.
     typing: HashMap<SharedString, Vec<Typist>>,
@@ -147,6 +149,7 @@ impl WorkspaceStore {
             activity_interval: ACTIVE_POLL,
             realtime: RealtimeState::Connecting,
             throttled: false,
+            typing_sender: None,
             typing: HashMap::new(),
             _polling: Vec::new(),
         };
@@ -162,8 +165,10 @@ impl WorkspaceStore {
         store.refresh(cx);
         // The socket does the real work; the poll and the sweep stay as the
         // floor for a token Slack will not open one for.
+        // Opening the socket hands back the sender, so it is taken first.
+        let realtime = store.spawn_realtime(cx);
         store._polling = vec![
-            store.spawn_realtime(cx),
+            realtime,
             store.spawn_activity_poll(cx),
             store.spawn_sweep(cx),
         ];

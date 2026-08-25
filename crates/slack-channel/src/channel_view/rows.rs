@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::selection::{TRANSCRIPT_ORDER, reading_order};
+
 /// One row of the rendered transcript, as the list addresses them.
 ///
 /// Timestamps rather than messages: the list asks for a row long after the
@@ -107,28 +109,17 @@ impl ChannelView {
             rows.push(Row::Empty);
         }
 
-        // One selection participant per message, carrying the text a copy
-        // should produce. Handles for messages that scrolled out of the window
-        // are dropped with them.
-        let mut selections = HashMap::with_capacity(self.transcript.len());
-        for row in &rows {
-            let Row::Message { ts, .. } = row else {
-                continue;
-            };
-            let Some(entry) = self.transcript.get(ts) else {
-                continue;
-            };
-            let text = slack_api::markup::to_plain_text(&entry.message.text);
-            let handle = match self.selections.remove(ts) {
-                Some(handle) => {
-                    handle.set_fallback_copy_text(text, cx);
-                    handle
-                }
-                None => gpui_base::TextSelectionHandle::new(text, cx),
-            };
-            selections.insert(ts.clone(), handle);
-        }
-        self.selections = selections;
+        // One selection participant per *block*, which is what lets a drag
+        // pick out characters rather than whole messages.
+        let blocks: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Message { ts, .. } => Some(ts),
+                _ => None,
+            })
+            .filter_map(|ts| Some((ts, self.transcript.get(ts)?.blocks.as_slice())))
+            .collect();
+        self.selections.refresh(blocks, cx);
 
         self.rows = rows;
         self.list.reset(self.rows.len());
@@ -219,7 +210,7 @@ impl ChannelView {
                 let selection = self
                     .selections
                     .get(&ts)
-                    .map(|handle| (handle.clone(), index as u64));
+                    .map(|handles| (handles, reading_order(TRANSCRIPT_ORDER, index)));
                 self.render_message(
                     &message, grouped, unread, selection, &me, &emoji, &actions, cx,
                 )
@@ -250,7 +241,7 @@ impl ChannelView {
         message: &Message,
         grouped: bool,
         unread_here: bool,
-        selection: Option<(gpui_base::TextSelectionHandle, u64)>,
+        selection: Option<(Rc<Vec<gpui_base::TextSelectionHandle>>, u64)>,
         me: &SharedString,
         emoji: &Rc<EmojiIndex>,
         actions: &MessageActions,
@@ -299,8 +290,8 @@ impl ChannelView {
         .own(store.is_me(&author_id))
         .system(message.is_system_notice())
         .unread_divider(unread_here)
-        .when_some(selection, |row, (handle, order)| {
-            row.selection(handle, order)
+        .when_some(selection, |row, (handles, order)| {
+            row.selection(handles, order)
         })
         .into_any_element()
     }

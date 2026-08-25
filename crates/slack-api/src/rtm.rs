@@ -11,7 +11,9 @@
 //! which is why reconnecting reports [`RtmEvent::Connected`] again: the gap is
 //! the caller's to close.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use futures::{SinkExt as _, StreamExt as _};
@@ -28,6 +30,13 @@ use crate::models::{Message, Ts};
 /// Slack closes a socket it believes is dead, and a desktop client that has
 /// been idle overnight is exactly the case that looks dead.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How often the client will say it is typing, per conversation.
+///
+/// Slack repeats its own at about this rate and treats each as good for a few
+/// seconds. Sending one per keystroke would say nothing more and put a frame
+/// on the wire for every letter.
+const TYPING_EVERY: Duration = Duration::from_secs(3);
 
 /// Backoff bounds for reopening a dropped socket.
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
@@ -88,6 +97,42 @@ pub enum RtmEvent {
     },
 }
 
+/// What this client says back over the socket.
+///
+/// Only typing: everything else a client does has a Web API method, and those
+/// report failures the socket cannot. Cheap to clone, and safe to call on
+/// every keystroke — it decides for itself how often that is worth sending.
+#[derive(Clone)]
+pub struct RtmSender {
+    outbound: mpsc::UnboundedSender<String>,
+    last_sent: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+impl RtmSender {
+    /// Tell the conversation someone is typing in it.
+    ///
+    /// Silently does nothing when there is no socket, which is the same thing
+    /// it would mean to the people watching.
+    pub fn typing(&self, channel: &str) {
+        let now = Instant::now();
+        {
+            let mut last = self
+                .last_sent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(sent) = last.get(channel)
+                && now.duration_since(*sent) < TYPING_EVERY
+            {
+                return;
+            }
+            last.insert(channel.to_string(), now);
+        }
+
+        let frame = json!({ "id": 0, "type": "typing", "channel": channel }).to_string();
+        let _ = self.outbound.unbounded_send(frame);
+    }
+}
+
 impl SlackClient {
     /// Open the real-time stream and keep it open.
     ///
@@ -96,8 +141,9 @@ impl SlackClient {
     /// a workspace whose token lacks `rtm:stream` gets one
     /// [`RtmEvent::Stopped`] and nothing further rather than an error the
     /// caller has to handle at every use.
-    pub fn realtime(&self) -> mpsc::UnboundedReceiver<RtmEvent> {
+    pub fn realtime(&self) -> (RtmSender, mpsc::UnboundedReceiver<RtmEvent>) {
         let (tx, rx) = mpsc::unbounded();
+        let (outbound_tx, mut outbound_rx) = mpsc::unbounded();
         let client = self.clone();
 
         self.spawn_on_transport(async move {
@@ -105,7 +151,7 @@ impl SlackClient {
 
             loop {
                 match client.rtm_connect().await {
-                    Ok(url) => match pump(&url, &tx).await {
+                    Ok(url) => match pump(&url, &tx, &mut outbound_rx).await {
                         // A clean close is Slack asking us to reconnect, which
                         // is routine and not worth backing off for.
                         Ok(()) => backoff = RECONNECT_MIN,
@@ -131,7 +177,13 @@ impl SlackClient {
             }
         });
 
-        rx
+        (
+            RtmSender {
+                outbound: outbound_tx,
+                last_sent: Arc::new(Mutex::new(HashMap::new())),
+            },
+            rx,
+        )
     }
 
     /// Ask Slack where to connect, and confirm the token may.
@@ -162,8 +214,13 @@ fn is_permanent(err: &crate::Error) -> bool {
     err.is_auth_failure() || err.is_missing_scope()
 }
 
-/// Read one connection until it closes, forwarding what it says.
-async fn pump(url: &str, tx: &mpsc::UnboundedSender<RtmEvent>) -> anyhow::Result<()> {
+/// Read one connection until it closes, forwarding what it says and sending
+/// what it is given.
+async fn pump(
+    url: &str,
+    tx: &mpsc::UnboundedSender<RtmEvent>,
+    outbound: &mut mpsc::UnboundedReceiver<String>,
+) -> anyhow::Result<()> {
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await?;
     tx.unbounded_send(RtmEvent::Connected)?;
 
@@ -189,6 +246,17 @@ async fn pump(url: &str, tx: &mpsc::UnboundedSender<RtmEvent>) -> anyhow::Result
                 socket
                     .send(Frame::text(json!({ "id": ping_id, "type": "ping" }).to_string()))
                     .await?;
+            },
+            frame = outbound.next() => match frame {
+                Some(frame) => {
+                    ping_id += 1;
+                    // Slack wants a per-connection id; the caller cannot know
+                    // one, so it is stamped here where the connection is.
+                    let frame = frame.replacen("\"id\":0", &format!("\"id\":{ping_id}"), 1);
+                    socket.send(Frame::text(frame)).await?;
+                }
+                // The sender was dropped along with everything else.
+                None => return Ok(()),
             }
         }
     }
@@ -372,6 +440,31 @@ mod tests {
         assert!(parse(r#"{"type":"dnd_updated_user","user":"U1"}"#).is_none());
         assert!(parse("not json at all").is_none());
         assert!(parse(r#"{"no_type":true}"#).is_none());
+    }
+
+    #[test]
+    fn typing_is_sent_at_most_once_every_few_seconds_per_conversation() {
+        let (outbound, mut frames) = mpsc::unbounded();
+        let sender = RtmSender {
+            outbound,
+            last_sent: Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        // A composer calls this on every keystroke.
+        for _ in 0..20 {
+            sender.typing("C1");
+        }
+        // A different conversation is throttled separately.
+        sender.typing("C2");
+
+        let mut sent = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            sent.push(frame);
+        }
+
+        assert_eq!(sent.len(), 2, "twenty keystrokes are one thing to say");
+        assert!(sent[0].contains("\"channel\":\"C1\""));
+        assert!(sent[1].contains("\"channel\":\"C2\""));
     }
 
     #[test]

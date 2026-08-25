@@ -11,8 +11,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, px,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
+    Styled, Subscription, Window, div, px,
 };
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::{
@@ -35,6 +35,9 @@ pub enum ComposerEvent {
     Changed(SharedString),
     /// The reader asked to attach a file.
     Attach,
+    /// Up was pressed with nothing written, which in every chat client means
+    /// "take me back to what I last said".
+    EditLast,
 }
 
 /// How the composer presents itself.
@@ -157,6 +160,26 @@ impl Composer {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(ComposerEvent::Cancel);
     }
+
+    /// Up on an empty composer recalls the last message instead of moving a
+    /// cursor that has nothing to move through.
+    ///
+    /// Taken in the capture phase, because by the time the textarea has had
+    /// the key it has already decided the caret does not move.
+    fn recall_last(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if self.mode != ComposerMode::Compose || self.sending {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        if keystroke.key != "up" || keystroke.modifiers.modified() {
+            return;
+        }
+        if !self.is_empty(cx) {
+            return;
+        }
+        cx.emit(ComposerEvent::EditLast);
+        cx.stop_propagation();
+    }
 }
 
 impl Focusable for Composer {
@@ -172,6 +195,9 @@ impl Render for Composer {
 
         v_flex()
             .track_focus(&self.focus)
+            .capture_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.recall_last(event, cx)),
+            )
             .w_full()
             .gap_2()
             .p_2()

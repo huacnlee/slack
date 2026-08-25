@@ -253,6 +253,22 @@ impl ChannelView {
         cx.notify();
     }
 
+    /// Reopen the reader's most recent message for editing.
+    ///
+    /// Their own and still editable: a join notice or someone else's message
+    /// is not what "my last message" means, and offering to edit one would
+    /// only fail at the API.
+    pub(super) fn edit_last(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
+        let me = self.store.read(cx).identity().user_id.clone();
+        let last = last_editable(self.transcript.entries().iter().map(|e| &e.message), &me);
+        if let Some(ts) = last {
+            self.start_edit(ts, window, cx);
+        }
+    }
+
     pub(super) fn start_edit(&mut self, ts: Ts, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.transcript.get(&ts) else {
             return;
@@ -355,5 +371,67 @@ impl ChannelView {
             });
         })
         .detach();
+    }
+}
+
+/// The most recent message `me` wrote and could still edit.
+///
+/// Their own and not a system notice: someone else's message is not what "my
+/// last message" means, and a join line has no text to rewrite.
+fn last_editable<'a>(
+    messages: impl DoubleEndedIterator<Item = &'a slack_api::models::Message>,
+    me: &str,
+) -> Option<Ts> {
+    messages
+        .rev()
+        .find(|message| message.author_id() == Some(me) && !message.is_system_notice())
+        .map(|message| message.ts.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slack_api::models::Message;
+
+    fn message(ts: &str, user: &str) -> Message {
+        Message {
+            ts: Ts(ts.to_string()),
+            text: "hello".to_string(),
+            user: Some(user.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_last_message_is_the_readers_own_latest() {
+        let messages = [
+            message("100.0", "U-me"),
+            message("200.0", "U-me"),
+            message("300.0", "U-other"),
+        ];
+
+        assert_eq!(
+            last_editable(messages.iter(), "U-me"),
+            Some(Ts("200.0".to_string())),
+            "someone else speaking last should not be what up recalls"
+        );
+    }
+
+    #[test]
+    fn a_join_notice_is_not_something_to_edit() {
+        let mut notice = message("300.0", "U-me");
+        notice.subtype = Some("channel_join".to_string());
+        let messages = [message("100.0", "U-me"), notice];
+
+        assert_eq!(
+            last_editable(messages.iter(), "U-me"),
+            Some(Ts("100.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_reader_who_has_said_nothing_recalls_nothing() {
+        let messages = [message("100.0", "U-other")];
+        assert_eq!(last_editable(messages.iter(), "U-me"), None);
     }
 }

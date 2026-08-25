@@ -7,14 +7,13 @@
 
 use std::rc::Rc;
 
-use gpui::HitboxBehavior;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement,
     RenderOnce, SharedString, SharedUri, StatefulInteractiveElement as _, Styled, Window, div, img,
     px,
 };
-use gpui_base::{ElementExt as _, TextSelectionHandle, TextSelectionRegistration};
+use gpui_base::TextSelectionHandle;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::popover::Popover;
 use gpui_component::tooltip::Tooltip;
@@ -97,8 +96,9 @@ pub struct MessageRow {
     /// Threads cannot be opened from inside a thread.
     threadable: bool,
     me: SharedString,
-    /// Lets this message take part in a window-wide text selection.
-    selection: Option<(TextSelectionHandle, u64)>,
+    /// Lets this message take part in a window-wide text selection: one
+    /// participant per text block, from `.0`, starting at reading order `.1`.
+    selection: Option<(Rc<Vec<TextSelectionHandle>>, u64)>,
     actions: MessageActions,
 }
 
@@ -135,14 +135,13 @@ impl MessageRow {
         }
     }
 
-    /// Join the window's text selection at `order` in reading order.
+    /// Join the window's text selection, starting at `order` in reading order.
     ///
-    /// The row registers its area rather than its glyphs, so a drag selects
-    /// whole messages and copying yields their text in order. Character-level
-    /// selection inside one message would mean replacing `InteractiveText`,
-    /// which is what makes a mention clickable and hoverable.
-    pub fn selection(mut self, handle: TextSelectionHandle, order: u64) -> Self {
-        self.selection = Some((handle, order));
+    /// The registration is per text block rather than per row, which is what
+    /// makes a drag pick out characters instead of whole messages; the blocks
+    /// take one handle each, in the order they are read.
+    pub fn selection(mut self, handles: Rc<Vec<TextSelectionHandle>>, order: u64) -> Self {
+        self.selection = Some((handles, order));
         self
     }
 
@@ -232,23 +231,9 @@ impl RenderOnce for MessageRow {
         let clock = time::clock(&self.ts);
         let gutter = window.rem_size() * GUTTER_REMS;
 
-        let selection = self.selection.clone();
-
         v_flex()
             .w_full()
             .when(self.unread_divider, |this| this.child(unread_divider(cx)))
-            .when_some(selection, |this, (handle, order)| {
-                this.on_prepaint(move |bounds, window, cx| {
-                    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                    handle.register(
-                        TextSelectionRegistration::new(hitbox, bounds)
-                            .with_document_order(order)
-                            .with_text_bounds(vec![bounds]),
-                        window,
-                        cx,
-                    );
-                })
-            })
             .child(
                 h_flex()
                     .id(self.element_id("row"))
@@ -332,7 +317,10 @@ impl MessageRow {
                         self.blocks.clone(),
                         self.emoji.clone(),
                     )
-                    .resolve_name(self.actions.resolve_name.clone()),
+                    .resolve_name(self.actions.resolve_name.clone())
+                    .when_some(self.selection.clone(), |body, (handles, order)| {
+                        body.selection(handles, order)
+                    }),
                 )
                 .into_any_element();
         }
@@ -369,7 +357,10 @@ impl MessageRow {
                     )
                     .on_link(self.actions.follow_link.clone())
                     .resolve_name(self.actions.resolve_name.clone())
-                    .hover_link(self.actions.hover_link.clone()),
+                    .hover_link(self.actions.hover_link.clone())
+                    .when_some(self.selection.clone(), |body, (handles, order)| {
+                        body.selection(handles, order)
+                    }),
                 ),
             )
             .when(self.edited, |this| {

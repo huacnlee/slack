@@ -55,6 +55,21 @@ pub enum Block {
     },
 }
 
+impl Block {
+    /// The block's own text, with the markup taken out.
+    ///
+    /// Per block rather than per message, because a reader selecting one
+    /// paragraph out of five should copy that paragraph.
+    pub fn plain_text(&self) -> String {
+        match self {
+            Block::Code(code) => code.replace('\n', " "),
+            Block::Paragraph(spans) | Block::Quote(spans) | Block::ListItem { spans, .. } => {
+                spans.iter().map(|s| s.text.as_str()).collect()
+            }
+        }
+    }
+}
+
 /// Parse a Slack message body into renderable blocks.
 pub fn parse(input: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
@@ -90,19 +105,11 @@ pub fn parse(input: &str) -> Vec<Block> {
 /// Collapse a message to plain text — used for previews, notifications, and
 /// the sidebar's last-message line.
 pub fn to_plain_text(input: &str) -> String {
-    let mut out = String::new();
-    for block in parse(input) {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        match block {
-            Block::Code(code) => out.push_str(&code.replace('\n', " ")),
-            Block::Paragraph(spans) | Block::Quote(spans) => {
-                out.extend(spans.iter().map(|s| s.text.as_str()))
-            }
-            Block::ListItem { spans, .. } => out.extend(spans.iter().map(|s| s.text.as_str())),
-        }
-    }
+    let out = parse(input)
+        .iter()
+        .map(Block::plain_text)
+        .collect::<Vec<_>>()
+        .join(" ");
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
